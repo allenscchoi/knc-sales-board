@@ -291,7 +291,10 @@ async function signIn() {
     auth: {
       clientId: CFG.clientId,
       authority: `https://login.microsoftonline.com/${CFG.tenantId}`,
-      redirectUri: location.origin + location.pathname,
+      // 주소를 /index.html 로 정규화 — 사용자가 '…/knc-sales-board/' 로 들어와도
+      // 등록된 리디렉션 URI와 일치하도록 (AADSTS50011 방지)
+      redirectUri: location.origin
+        + (location.pathname.endsWith('/') ? location.pathname + 'index.html' : location.pathname),
     },
     cache: { cacheLocation: 'sessionStorage' },
   });
