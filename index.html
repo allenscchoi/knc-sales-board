@@ -267,6 +267,7 @@ const CFG = {
     cogs:   '63e212e1-c6e8-430a-9a90-1a63fd3d999c',
     buyer:  '1fbfa37b-3c3b-4575-a44a-c7b418dfeb4a',
     seller: '62567a70-e5f2-4363-b8ff-b71eb7168f4a',
+    worklog: 'b0398f59-a7d6-49b9-9855-6d7bbb4cb3c8',
   },
   scopes: ['https://graph.microsoft.com/Sites.Read.All'],
   annualTarget: 0,   // Buyer 리스트의 SalesTarget 합계로 대체됨 (아래 F.target)
@@ -510,21 +511,171 @@ async function loadLive(onProgress) {
   const po = await fetchList(CFG.lists.po, n => onProgress && onProgress(`PO ${n}건…`));
   onProgress && onProgress('고객 정보 읽는 중…');
   const buyers = await fetchList(CFG.lists.buyer);
+  onProgress && onProgress('업무일지 읽는 중…');
+  let worklog = [];
+  try { worklog = await fetchList(CFG.lists.worklog); }
+  catch (e) { console.warn('WORK LOG 조회 실패 — 면담 경과일은 비웁니다:', e.message); }
   const asof = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
   onProgress && onProgress('집계 중…');
-  return { pay: buildPay(po, buyers, asof), ops: opsStub(), _who: account.username };
+  return { pay: buildPay(po, buyers, asof),
+           ops: buildOps(po, buyers, worklog, asof),
+           _who: account.username };
 }
 
-/* 영업현황은 다음 단계 — 화면 코드가 참조하는 최소 형태만 채워 둔다 */
-function opsStub() {
+/* ── 집계: build_ops_bundle.py 와 동일한 산출물 (영업 현황) ── */
+
+/* WORK LOG 필드 (columns_map 기준) */
+const WL = {
+  category: 'field_3',      // 일반관리 / Trading / WorkShop / 고객동향 / 주물관리 / 신제품 / 품질 / 사무자동화
+  start: 'field_6',         // StartDate
+  buyer: 'BuyerLookupId',
+};
+
+function buildOps(poRows, buyers, worklog, asof) {
+  const bmap = new Map();
+  for (const b of buyers) if (b.Title) bmap.set(b.Title, b);
+  const byId = new Map();                       // Buyer 리스트 id → BB 코드
+  for (const b of buyers) if (b.id) byId.set(String(b.id), b.Title);
+
+  /* 면담(고객동향) / 전체 접촉 최근일 */
+  const meetLast = new Map(), touchLast = new Map(), meetCnt = new Map();
+  const wlMeta = { total: worklog.length, linked: 0, meet_total: 0, meet_linked: 0 };
+  for (const r of worklog) {
+    const bb = r[WL.buyer] ? byId.get(String(r[WL.buyer])) : null;
+    const d = D_(r[WL.start]) || D_(r.Created);
+    if (r[WL.category] === '고객동향') wlMeta.meet_total++;
+    if (!bb || !d) continue;
+    wlMeta.linked++;
+    if (!touchLast.has(bb) || d > touchLast.get(bb)) touchLast.set(bb, d);
+    if (r[WL.category] === '고객동향') {
+      wlMeta.meet_linked++;
+      meetCnt.set(bb, (meetCnt.get(bb) || 0) + 1);
+      if (!meetLast.has(bb) || d > meetLast.get(bb)) meetLast.set(bb, d);
+    }
+  }
+
+  /* 고객별 PO 묶기 */
+  const byBB = new Map();
+  for (const f of poRows) {
+    const { bb } = parsePono((f.Title || '').trim());
+    if (!bb) continue;
+    if (!byBB.has(bb)) byBB.set(bb, []);
+    byBB.get(bb).push(f);
+  }
+
+  const DAY = 864e5;
+  const rows = [];
+  for (const [bb, prs] of byBB) {
+    const pods = prs.map(f => D_(f.field_4)).filter(Boolean).sort((a, b) => a - b);
+    if (!pods.length) continue;
+    const lastPo = pods[pods.length - 1];
+    const dels = prs.map(f => D_(f.DeliveryDate)).filter(Boolean).sort((a, b) => a - b);
+    const pastDel = dels.filter(d => d <= asof);
+    const nextDel = dels.find(d => d > asof) || null;
+
+    /* 발주 간격 — 고객마다 다르다 (최근 2년) */
+    const recent = pods.filter(d => (asof - d) / DAY <= 730);
+    const gaps = [];
+    for (let i = 0; i + 1 < recent.length; i++) gaps.push((recent[i + 1] - recent[i]) / DAY);
+    const avg = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : null;
+    let sd = null;
+    if (gaps.length > 1) {
+      const m = avg;
+      sd = Math.sqrt(gaps.reduce((a, g) => a + (g - m) * (g - m), 0) / gaps.length);
+    }
+    const cv = (avg && sd != null && avg > 0) ? sd / avg : null;
+    let conf;
+    if (gaps.length >= 6 && cv != null && cv <= 0.6) conf = '높음';
+    else if (gaps.length >= 3 && cv != null && cv <= 1.0) conf = '보통';
+    else if (gaps.length) conf = '낮음';
+    else conf = '표본부족';
+
+    const expNext = avg ? new Date(lastPo.getTime() + Math.round(avg) * DAY) : null;
+    const overdue = (expNext && expNext < asof) ? Math.round((asof - expNext) / DAY) : 0;
+    const elapsed = Math.round((asof - lastPo) / DAY);
+    const ratio = avg ? +(elapsed / avg).toFixed(2) : null;
+
+    const salesBy = {};
+    for (const f of prs) {
+      const d = D_(f.field_4);
+      if (d) salesBy[d.getUTCFullYear()] = (salesBy[d.getUTCFullYear()] || 0) + N_(f.Sales_KRW_Total);
+    }
+    const b = bmap.get(bb) || {};
+    const target = Number(b[F.target] || 0);
+    const s26 = salesBy[asof.getUTCFullYear()] || 0;
+    const ml = meetLast.get(bb), tl = touchLast.get(bb);
+
+    rows.push({
+      bb, name: b[F.name] || bb,
+      deal: b[F.deal] || '미지정', industry: b[F.industry] || '미분류', status: b[F.deal] || null,
+      po_elapsed: elapsed, last_po: ymd(lastPo),
+      del_elapsed: pastDel.length ? Math.round((asof - pastDel[pastDel.length - 1]) / DAY) : null,
+      next_del: nextDel ? ymd(nextDel) : null,
+      next_del_in: nextDel ? Math.round((nextDel - asof) / DAY) : null,
+      avg_gap: avg ? Math.round(avg) : null,
+      gap_sd: sd != null ? Math.round(sd) : null,
+      confidence: conf, gap_n: gaps.length, ratio,
+      exp_next_po: expNext ? ymd(expNext) : null,
+      overdue,
+      meet_elapsed: ml ? Math.round((asof - ml) / DAY) : null,
+      meet_last: ml ? ymd(ml) : null,
+      meet_count: meetCnt.get(bb) || 0,
+      touch_elapsed: tl ? Math.round((asof - tl) / DAY) : null,
+      touch_last: tl ? ymd(tl) : null,
+      s2025: salesBy[asof.getUTCFullYear() - 1] || 0,
+      s2026: s26,
+      target,
+      progress: target ? s26 / target : null,
+      po_count_2026: pods.filter(d => d.getUTCFullYear() === asof.getUTCFullYear()).length,
+    });
+  }
+  rows.sort((a, b) => (b.target - a.target) || (b.s2026 - a.s2026));
+  const active = rows.filter(r => r.target > 0);
+
+  /* 진행 중 PO (발주 완료 ~ 납품 전) */
+  const inflight = [];
+  for (const f of poRows) {
+    const pod = D_(f.field_4), dl = D_(f.DeliveryDate);
+    if (!pod || pod > asof) continue;
+    if (dl && dl <= asof) continue;
+    const { bb } = parsePono((f.Title || '').trim());
+    const b = bmap.get(bb) || {};
+    inflight.push({
+      po: f.Title, bb, name: b[F.name] || bb,
+      deal: b[F.deal] || '미지정', industry: b[F.industry] || '미분류',
+      po_date: ymd(pod), po_age: Math.round((asof - pod) / DAY),
+      etd: D_(f.field_5) ? ymd(D_(f.field_5)) : null,
+      delivery: dl ? ymd(dl) : null,
+      days_to: dl ? Math.round((dl - asof) / DAY) : null,
+      sales: N_(f.Sales_KRW_Total),
+      ff: null,
+    });
+  }
+  inflight.sort((a, b) => (a.days_to == null) - (b.days_to == null) || (a.days_to - b.days_to));
+
+  const uniq = k => [...new Set(active.map(r => r[k]))].sort();
   return {
-    _stub: true,
-    meta: { board: '영업 현황', as_of: '', worklog: { total: 0, linked: 0, meet_total: 0, meet_linked: 0 } },
-    facets: { deal: [], industry: [] },
-    summary: { customers: 0, overdue_count: 0, upcoming_del_30d: 0, no_po_90d: 0, no_meet: 0,
-               inflight_po: 0, inflight_sales: 0, inflight_customers: 0, inflight_nodate: 0 },
-    customers: [],
-    inflight: [],
+    meta: {
+      board: '영업 현황',
+      axis: '발주일(PODate) 기준 · 경과일은 오늘 대비',
+      as_of: ymd(asof),
+      worklog: wlMeta,
+      note: '평균발주주기는 고객별로 다름. 지연 = 최종발주 후 경과일이 그 고객의 평균주기를 넘은 일수.',
+    },
+    facets: { deal: uniq('deal'), industry: uniq('industry') },
+    summary: {
+      customers: active.length,
+      overdue_count: active.filter(r => r.overdue > 0).length,
+      upcoming_del_30d: active.filter(r => r.next_del_in != null && r.next_del_in >= 0 && r.next_del_in <= 30).length,
+      no_po_90d: active.filter(r => r.po_elapsed > 90).length,
+      no_meet: active.filter(r => r.meet_elapsed == null).length,
+      inflight_po: inflight.length,
+      inflight_sales: inflight.reduce((a, x) => a + x.sales, 0),
+      inflight_customers: new Set(inflight.map(x => x.bb)).size,
+      inflight_nodate: inflight.filter(x => x.days_to == null).length,
+    },
+    customers: active,
+    inflight,
   };
 }
 
@@ -560,21 +711,6 @@ async function boot() {
 let PAY, OPS;
 function start(){
 PAY = D.pay; OPS = D.ops;
-
-/* 1차 라이브: 입금현황만 — 영업현황 탭은 잠그고 안내를 띄운다 */
-const PAY_ONLY = !OPS || OPS._stub;
-if (PAY_ONLY) {
-  document.querySelectorAll('#boardNav button').forEach(b=>{
-    if (b.dataset.board !== 'pay') {
-      b.disabled = true; b.title = '준비 중';
-      b.style.opacity = .45; b.style.cursor = 'default';
-    }
-  });
-  document.getElementById('boardOps').innerHTML =
-    '<div class="board-intro" style="--accent:var(--muted)"><span>🧭</span><span>'
-    + '<b>영업 현황은 준비 중입니다.</b> 라이브 버전은 입금 현황부터 열었습니다. '
-    + '면담 경과일이 KNC WORK LOG(다른 사이트)에 있어 다음 단계에서 연결합니다.</span></div>';
-}
 
 
 /* ── format ── */
