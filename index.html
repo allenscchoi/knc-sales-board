@@ -1,0 +1,1269 @@
+<meta charset="utf-8">
+<title>KNC 영업 전광판</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    color-scheme: light;
+    --page:#eef1f4; --card:#ffffff; --surface:#fbfcfd; --sunken:#f4f6f8;
+    --ink:#0f1519; --secondary:#4b5560; --muted:#79868f;
+    --grid:#e4e9ed; --border:rgba(15,21,25,.10); --border-strong:rgba(15,21,25,.18);
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;
+    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    --good-ink:#0a7f0a; --bad-ink:#c0322f; --warn-ink:#a06a00;
+    --track:#e6eaee;
+    --shadow:0 1px 2px rgba(15,21,25,.04),0 2px 8px rgba(15,21,25,.05);
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])){
+      color-scheme: dark;
+      --page:#0d0f12; --card:#1c2126; --surface:#181c20; --sunken:#15191d;
+      --ink:#eef2f5; --secondary:#a7b2bb; --muted:#7a878f;
+      --grid:#282e34; --border:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.18);
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+      --good-ink:#22b422; --bad-ink:#e56b68; --warn-ink:#d69a12;
+      --track:#262c32;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 2px 10px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0f12; --card:#1c2126; --surface:#181c20; --sunken:#15191d;
+    --ink:#eef2f5; --secondary:#a7b2bb; --muted:#7a878f;
+    --grid:#282e34; --border:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.18);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    --good-ink:#22b422; --bad-ink:#e56b68; --warn-ink:#d69a12;
+    --track:#262c32;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 2px 10px rgba(0,0,0,.28);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1240px;margin:0 auto;padding:0 20px 72px;}
+  h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em;text-wrap:balance;}
+  .num{font-variant-numeric:tabular-nums;}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
+
+  /* ── top bar + board nav ── */
+  header.top{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--page) 90%,transparent);
+    backdrop-filter:saturate(1.6) blur(10px);border-bottom:1px solid var(--border);}
+  .top-in{max-width:1240px;margin:0 auto;padding:12px 20px 0;}
+  .top-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{width:10px;height:20px;border-radius:2px;background:linear-gradient(180deg,var(--s1),var(--s3));transform:translateY(3px);}
+  .brand h1{font-size:17px;}
+  .sp{flex:1;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--border);white-space:nowrap;}
+  .chip.warn{color:var(--bad-ink);border-color:color-mix(in srgb,var(--critical) 45%,var(--border));background:color-mix(in srgb,var(--critical) 8%,transparent);}
+  .chip .dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+  .asof{font-size:12px;color:var(--muted);}
+  .refresh{appearance:none;font:inherit;font-size:12.5px;font-weight:600;color:var(--secondary);background:var(--card);
+    border:1px solid var(--border);border-radius:8px;padding:5px 11px;height:29px;cursor:pointer;white-space:nowrap;}
+  .refresh:hover{color:var(--ink);border-color:var(--border-strong);}
+  .refresh:disabled{opacity:.6;cursor:default;}
+  .refresh:focus-visible{outline:2px solid var(--s1);outline-offset:2px;}
+  .mutx{color:var(--muted);font-size:11px;}
+  .ttoggle{appearance:none;border:1px solid var(--border);background:var(--card);color:var(--secondary);width:32px;height:29px;border-radius:8px;cursor:pointer;display:grid;place-items:center;font-size:14px;}
+  .ttoggle:hover{border-color:var(--border-strong);color:var(--ink);}
+  .ttoggle:focus-visible{outline:2px solid var(--s1);outline-offset:2px;}
+
+  nav.boards{display:flex;gap:2px;margin-top:10px;}
+  nav.boards button{appearance:none;background:none;border:none;border-bottom:2px solid transparent;
+    padding:9px 15px 10px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;
+    display:flex;align-items:center;gap:7px;border-radius:6px 6px 0 0;}
+  nav.boards button:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 4%,transparent);}
+  nav.boards button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--s1);}
+  nav.boards button:focus-visible{outline:2px solid var(--s1);outline-offset:-2px;}
+  nav.boards .bdot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.55;}
+  nav.boards button[aria-selected="true"] .bdot{opacity:1;}
+  .bdot.live{background:var(--critical);opacity:1!important;}
+  .bdot.prep{background:var(--s4);}
+  .bdot.stat{background:var(--s1);}
+
+  /* ── board intro strip ── */
+  .board-intro{display:flex;gap:12px;align-items:flex-start;margin:18px 0 16px;padding:12px 15px;border-radius:11px;
+    background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent,var(--s1));font-size:12.5px;color:var(--secondary);}
+  .board-intro b{color:var(--ink);}
+  .board-intro .axis{font-weight:650;color:var(--ink);white-space:nowrap;}
+
+  /* ── filter row ── */
+  .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;padding:12px 14px;
+    background:var(--card);border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);}
+  .filters .flab{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-right:2px;}
+  .filters select{appearance:none;font:inherit;font-size:13px;color:var(--ink);background:var(--sunken);
+    border:1px solid var(--border);border-radius:8px;padding:6px 28px 6px 10px;cursor:pointer;
+    background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+    background-position:calc(100% - 15px) 13px,calc(100% - 10px) 13px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
+  .filters select:hover{border-color:var(--border-strong);}
+  .filters select:focus-visible{outline:2px solid var(--s1);outline-offset:1px;}
+  .filters .reset{appearance:none;font:inherit;font-size:12.5px;color:var(--secondary);background:none;border:1px solid var(--border);
+    border-radius:8px;padding:6px 12px;cursor:pointer;}
+  .filters .reset:hover{color:var(--ink);border-color:var(--border-strong);}
+  .filters .hint{font-size:11.5px;color:var(--muted);margin-left:auto;}
+
+  /* multi-select */
+  .ms{position:relative;}
+  .ms-btn{appearance:none;font:inherit;font-size:13px;color:var(--ink);background:var(--sunken);border:1px solid var(--border);
+    border-radius:8px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;max-width:280px;}
+  .ms-btn:hover{border-color:var(--border-strong);}
+  .ms-btn:focus-visible{outline:2px solid var(--s1);outline-offset:1px;}
+  .ms-btn .k{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
+  .ms-btn .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .ms-btn .cnt{font-size:11px;font-weight:700;color:#fff;background:var(--s1);border-radius:999px;padding:1px 6px;}
+  .ms-btn .car{border:4px solid transparent;border-top-color:var(--muted);margin-top:3px;flex:none;}
+  .ms-pop{position:absolute;z-index:40;top:calc(100% + 5px);left:0;min-width:230px;max-height:310px;overflow-y:auto;
+    background:var(--card);border:1px solid var(--border-strong);border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.20);padding:7px;}
+  .ms-pop[hidden]{display:none;}
+  .ms-tools{display:flex;gap:6px;padding:3px 4px 7px;border-bottom:1px solid var(--border);margin-bottom:5px;}
+  .ms-tools button{appearance:none;font:inherit;font-size:11.5px;color:var(--secondary);background:var(--sunken);
+    border:1px solid var(--border);border-radius:6px;padding:3px 9px;cursor:pointer;}
+  .ms-tools button:hover{color:var(--ink);}
+  .ms-pop label{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;font-size:13px;cursor:pointer;}
+  .ms-pop label:hover{background:color-mix(in srgb,var(--ink) 5%,transparent);}
+  .ms-pop input{accent-color:var(--s1);width:14px;height:14px;flex:none;}
+  .ms-pop .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .ms-pop .sub{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;}
+
+  /* ── layout ── */
+  section{margin-top:26px;}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:13px;}
+  .sec-head h2{font-size:15px;}
+  .sec-head .sub{font-size:12.5px;color:var(--muted);}
+  .rule{height:1px;background:var(--border);flex:1;align-self:center;}
+  .grid{display:grid;gap:15px;}
+  .g4{grid-template-columns:repeat(4,1fr);} .g3{grid-template-columns:repeat(3,1fr);} .g2{grid-template-columns:1fr 1fr;}
+  .g-wide{grid-template-columns:1.5fr 1fr;}
+  @media(max-width:900px){.g4{grid-template-columns:repeat(2,1fr);}.g3,.g2,.g-wide{grid-template-columns:1fr;}}
+  @media(max-width:540px){.g4{grid-template-columns:1fr;}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:13px;padding:17px;box-shadow:var(--shadow);}
+  .card-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:4px;}
+  .card h3{font-size:13.5px;color:var(--secondary);font-weight:650;}
+  .card .note{font-size:11.5px;color:var(--muted);margin-top:2px;}
+
+  /* chart/table toggle */
+  .vswitch{margin-left:auto;display:flex;gap:0;border:1px solid var(--border);border-radius:7px;overflow:hidden;flex:none;}
+  .vswitch button{appearance:none;background:var(--sunken);border:none;font:inherit;font-size:11px;font-weight:650;
+    color:var(--muted);padding:4px 9px;cursor:pointer;}
+  .vswitch button[aria-pressed="true"]{background:var(--s1);color:#fff;}
+  .vswitch button:focus-visible{outline:2px solid var(--s1);outline-offset:-2px;}
+
+  /* KPI */
+  .kpi .lab{font-size:12.5px;color:var(--secondary);}
+  .kpi .val{font-size:31px;font-weight:680;letter-spacing:-.02em;margin-top:7px;line-height:1;}
+  .kpi .val .u{font-size:15px;font-weight:600;color:var(--secondary);margin-left:3px;}
+  .kpi .sub{font-size:11.5px;color:var(--muted);margin-top:6px;font-variant-numeric:tabular-nums;}
+  .kpi.accent{border-color:color-mix(in srgb,var(--s1) 40%,var(--border));}
+  .meter{height:8px;border-radius:4px;background:var(--track);margin-top:11px;overflow:hidden;}
+  .meter i{display:block;height:100%;border-radius:4px;background:var(--s1);}
+  .delta{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:650;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .delta.up{color:var(--good-ink);} .delta.down{color:var(--bad-ink);} .delta.flat{color:var(--muted);}
+
+  /* svg */
+  svg.cs{display:block;width:100%;height:auto;overflow:visible;}
+  .legend{display:flex;gap:15px;flex-wrap:wrap;margin:6px 0 8px;font-size:12px;color:var(--secondary);}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;transform:translateY(1px);}
+  .ax{fill:var(--muted);font-size:10.5px;font-variant-numeric:tabular-nums;}
+  .glab{fill:var(--secondary);font-size:10.5px;}
+  .dlab{fill:var(--ink);font-size:11px;font-weight:650;font-variant-numeric:tabular-nums;}
+
+  /* table */
+  .tbl-wrap{overflow-x:auto;margin-top:10px;}
+  table.dt{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  table.dt th{text-align:right;font-weight:650;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    padding:0 10px 8px 0;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card);}
+  table.dt th:first-child,table.dt td:first-child{text-align:left;padding-left:0;}
+  table.dt td{padding:7px 10px 7px 0;border-bottom:1px solid var(--border);color:var(--secondary);}
+  table.dt td:first-child{color:var(--ink);font-weight:500;}
+  table.dt td:not(:first-child){text-align:right;}
+  table.dt tr:last-child td{border-bottom:none;}
+  table.dt tr.hot td{background:color-mix(in srgb,var(--critical) 6%,transparent);}
+  .pill{display:inline-block;font-size:10.5px;font-weight:650;padding:2px 7px;border-radius:5px;}
+  .pill.ok{color:var(--good-ink);background:color-mix(in srgb,var(--good) 12%,transparent);}
+  .pill.warn{color:var(--warn-ink);background:color-mix(in srgb,var(--warning) 16%,transparent);}
+  .pill.bad{color:var(--bad-ink);background:color-mix(in srgb,var(--critical) 11%,transparent);}
+  .pill.mut{color:var(--muted);background:color-mix(in srgb,var(--muted) 12%,transparent);}
+
+  /* alert list */
+  ul.alist{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:0;}
+  ul.alist li{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;}
+  ul.alist li:last-child{border-bottom:none;}
+  ul.alist .nm{color:var(--ink);font-weight:550;flex:1;}
+  ul.alist .v{font-variant-numeric:tabular-nums;color:var(--secondary);font-size:12.5px;}
+  .sevbar{width:3px;height:26px;border-radius:2px;flex:none;}
+
+  footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted);}
+  footer b{color:var(--secondary);}
+  .hidden{display:none!important;}
+  #tip{position:fixed;z-index:60;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--card);
+    font-size:12px;line-height:1.45;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.28);max-width:250px;font-variant-numeric:tabular-nums;}
+  #tip .tt-t{font-weight:700;margin-bottom:3px;}
+  #tip .tt-r{display:flex;justify-content:space-between;gap:14px;}
+  #tip .tt-r .k{opacity:.75;}
+  .hoverable:hover{opacity:.84;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;}}
+</style>
+
+<div id="stage">
+  <div class="stage-box">
+    <div class="stage-mark"></div>
+    <div class="stage-msg">준비 중…</div>
+    <div class="stage-sub"></div>
+  </div>
+</div>
+<style>
+  #stage{position:fixed;inset:0;display:grid;place-items:center;background:var(--page);z-index:100;}
+  .stage-box{text-align:center;max-width:420px;padding:0 24px;}
+  .stage-mark{width:12px;height:26px;border-radius:3px;margin:0 auto 18px;
+    background:linear-gradient(180deg,var(--s1),var(--s3));animation:pulse 1.4s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .stage-msg{font-size:15px;font-weight:650;color:var(--ink);}
+  .stage-sub{font-size:12.5px;color:var(--muted);margin-top:7px;line-height:1.6;}
+  @media (prefers-reduced-motion:reduce){.stage-mark{animation:none}}
+</style>
+<script src="msal-browser.min.js"></script>
+<div id="app" hidden>
+<header class="top">
+  <div class="top-in">
+    <div class="top-row">
+      <div class="brand"><span class="mark"></span><h1>KNC 영업 전광판</h1></div>
+      <span class="sp"></span>
+      <span class="chip warn"><span class="dot"></span>사내 한정 · 외부 공유 금지</span>
+      <span class="asof num" id="asOf"></span>
+      <span class="asof" id="whoami"></span>
+      <button class="refresh" id="refreshBtn" title="최신 게시본을 다시 불러옵니다">↻ 새로고침</button>
+      <button class="ttoggle" id="themeBtn" aria-label="테마 전환" title="라이트/다크">◐</button>
+    </div>
+    <nav class="boards" role="tablist" id="boardNav">
+      <button role="tab" data-board="pay" aria-selected="true"><span class="bdot live"></span>입금 현황</button>
+      <button role="tab" data-board="ops" aria-selected="false"><span class="bdot prep"></span>영업 현황</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="boardPay" class="board"></div>
+  <div id="boardOps" class="board hidden"></div>
+  <footer id="foot"></footer>
+</div>
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+
+/* ── 라이브 데이터 (Graph API) ── */
+let D = { pay: null, ops: null };
+
+/* ============================================================
+   KNC 영업 전광판 — Graph API 데이터 공급부
+   뷰어 본인 계정으로 SharePoint 리스트를 직접 읽어 집계한다.
+   결과는 build_*.py 가 만들던 번들과 **같은 모양**이라 화면 코드는 그대로 쓴다.
+   ============================================================ */
+
+const CFG = {
+  tenantId: '6218e72c-b30d-40ea-9384-9468177fe407',
+  clientId: '680e5d22-ac42-4869-8690-9291ab8c9fad',          // ← Entra 앱 등록 후 여기에 채운다
+  siteId: 'kncmarinekr.sharepoint.com,ea02f875-c730-4ec4-a6e4-b55a13672689,716f7444-0f22-46b9-bdca-fa1f535b3e47',
+  lists: {
+    po:     '9c9bc26a-d398-4bfb-9f66-0e99c3ffbd3e',
+    cogs:   '63e212e1-c6e8-430a-9a90-1a63fd3d999c',
+    buyer:  '1fbfa37b-3c3b-4575-a44a-c7b418dfeb4a',
+    seller: '62567a70-e5f2-4363-b8ff-b71eb7168f4a',
+  },
+  scopes: ['https://graph.microsoft.com/Sites.Read.All'],
+  annualTarget: 0,   // Buyer 리스트의 SalesTarget 합계로 대체됨 (아래 F.target)
+};
+
+/* SharePoint 내부 필드명 — 한글 컬럼명은 인코딩되어 있다 */
+const F = {
+  name: 'Korean_Name',
+  deal: '_xac70__xb798__xc0c1__xd669_',          // 거래상황
+  industry: 'Industry_Category',
+  target: '_xc601__xc5c5__xbaa9__xd45c__x00',    // 영업목표 (SalesTarget, currency)
+};
+
+/* ── 인증 ── (msal-browser UMD 전역은 `msal`) */
+let msalApp, account;
+async function signIn() {
+  if (typeof msal === 'undefined' || !msal.PublicClientApplication) {
+    throw new Error('MSAL 라이브러리를 불러오지 못했습니다 (msal-browser.min.js 확인)');
+  }
+  msalApp = new msal.PublicClientApplication({
+    auth: {
+      clientId: CFG.clientId,
+      authority: `https://login.microsoftonline.com/${CFG.tenantId}`,
+      redirectUri: location.origin + location.pathname,
+    },
+    cache: { cacheLocation: 'sessionStorage' },
+  });
+  await msalApp.initialize();
+  const r = await msalApp.handleRedirectPromise();
+  if (r) account = r.account;
+  if (!account) {
+    const all = msalApp.getAllAccounts();
+    if (all.length) account = all[0];
+  }
+  if (!account) {
+    await msalApp.loginRedirect({ scopes: CFG.scopes });
+    return null;
+  }
+  msalApp.setActiveAccount(account);
+  return account;
+}
+
+async function token() {
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: CFG.scopes, account });
+    return r.accessToken;
+  } catch (e) {
+    await msalApp.acquireTokenRedirect({ scopes: CFG.scopes });
+    throw e;
+  }
+}
+
+/* ── Graph 조회 (페이징) ── */
+async function fetchList(listId, onProgress) {
+  const t = await token();
+  let url = `https://graph.microsoft.com/v1.0/sites/${CFG.siteId}/lists/${listId}/items?expand=fields&$top=999`;
+  const out = [];
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
+    if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const j = await res.json();
+    out.push(...j.value.map(v => v.fields || v));
+    url = j['@odata.nextLink'] || null;
+    if (onProgress) onProgress(out.length);
+  }
+  return out;
+}
+
+/* ── 유틸 ── */
+const D_ = v => { if (!v) return null; const s = String(v).slice(0, 10);
+  const d = new Date(s + 'T00:00:00Z'); return isNaN(d) ? null : d; };
+const N_ = v => (typeof v === 'number' ? v : parseFloat(v) || 0);
+const ymd = d => d.toISOString().slice(0, 10);
+const ym_ = d => d.toISOString().slice(0, 7);
+const doy = d => Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 864e5);
+
+/* PO 번호에서 제품(PP)·고객(BB) 코드 분리: 예 VH-2734-BY */
+function parsePono(no) {
+  const m = String(no || '').match(/^([A-Z0-9]+)-[^-]+-([A-Z0-9]+)$/i);
+  return m ? { pp: m[1].toUpperCase(), bb: m[2].toUpperCase() } : { pp: null, bb: null };
+}
+
+const PRE_COST = new Set(['Pending', 'PO Confirmed', 'Ship Scheduled']);
+const POST_COST = new Set(['Shipped', 'Partial Shipped', 'Delivered', 'COGS Confirmed']);
+
+/* ── 집계: build_payment_bundle.py 와 동일한 산출물 ── */
+function buildPay(poRows, buyers, asof) {
+  const CUR_Y = String(asof.getUTCFullYear());
+  const cutoff = doy(asof);
+  const FROM_Y = 2021;
+  const cells = new Map(), sched = new Map();
+  const key = (bb, ym) => bb + '|' + ym;
+
+  const statusAgg = new Map();
+  const gaps = [], anomalies = [];
+  const pipeline = {
+    collected: { po: 0, sales: 0 },
+    '생산 중': { po: 0, sales: 0, cogs_po: 0 },
+    '출하·납품 완료': { po: 0, sales: 0, cogs_po: 0 },
+    '상태미상': { po: 0, sales: 0, cogs_po: 0 },
+    no_paydate: { po: 0, sales: 0 },
+  };
+  let regSales = 0, regCost = 0, unregSales = 0, unregPo = 0, paidKrw = 0, unpaidKrw = 0, paidPo = 0, unpaidPo = 0;
+
+  for (const f of poRows) {
+    const pono = (f.Title || '').trim();
+    if (!pono) continue;
+    const { bb } = parsePono(pono);
+    const sales = N_(f.Sales_KRW_Total);
+    const cogs = N_(f.COGSTotal);
+    const cost = cogs + N_(f.ExtraKRWTotal) + N_(f.LogisticKRWTotal);
+    const covered = cogs > 0;
+    const st = f.Status || null;
+    const pd = D_(f.Payment_Date), pod = D_(f.field_4);
+
+    // 상태별 집계 + 원가 누락 판정
+    const sk = st || '(미지정)';
+    if (!statusAgg.has(sk)) statusAgg.set(sk, { status: sk, po: 0, cogs_po: 0, sales: 0, missing_sales: 0, pre_cost: PRE_COST.has(sk) });
+    const sa = statusAgg.get(sk);
+    sa.po++; sa.sales += sales;
+    if (covered) sa.cogs_po++;
+    else {
+      sa.missing_sales += sales;
+      if (POST_COST.has(st)) gaps.push({ po: pono, bb, status: st, sales,
+        etd: f.field_5 ? String(f.field_5).slice(0, 10) : '', delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
+    }
+    // 입금일 이상값
+    if (f.Payment_Date && (!pd || pd.getUTCFullYear() < 2000)) {
+      anomalies.push({ po: pono, bb, value: String(f.Payment_Date).slice(0, 19), sales,
+        status: st || '(미지정)', podate: pod ? ymd(pod) : '', etd: f.field_5 ? String(f.field_5).slice(0, 10) : '',
+        delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
+    }
+
+    // 셀 집계
+    if (pd && pd.getUTCFullYear() >= FROM_Y) {
+      const k = key(bb || '미상', ym_(pd));
+      if (!cells.has(k)) cells.set(k, { bb: bb || '미상', ym: ym_(pd),
+        sales: 0, cost: 0, cogs: 0, csales: 0, po: 0,
+        col_sales: 0, col_cost: 0, col_cogs: 0, col_csales: 0, col_po: 0,
+        ytd_sales: 0, ytd_cost: 0, ytd_cogs: 0, ytd_csales: 0, ytd_po: 0 });
+      const c = cells.get(k);
+      c.sales += sales; c.po++;
+      if (covered) { c.cost += cost; c.cogs += cogs; c.csales += sales; }
+      if (pd <= asof) {
+        c.col_sales += sales; c.col_po++;
+        if (covered) { c.col_cost += cost; c.col_cogs += cogs; c.col_csales += sales; }
+      } else {
+        const sk2 = key(bb || '미상', ym_(pd));
+        if (!sched.has(sk2)) sched.set(sk2, { bb: bb || '미상', ym: ym_(pd), sales: 0, po: 0 });
+        const s2 = sched.get(sk2); s2.sales += sales; s2.po++;
+      }
+      if (doy(pd) <= cutoff) {
+        c.ytd_sales += sales; c.ytd_po++;
+        if (covered) { c.ytd_cost += cost; c.ytd_cogs += cogs; c.ytd_csales += sales; }
+      }
+    }
+
+    // 파이프라인 (수금완료 / 미수금 진행분)
+    if (pod) {
+      if (pd && pd.getUTCFullYear() >= 2000 && pd <= asof) {
+        if (String(pd.getUTCFullYear()) === CUR_Y) { pipeline.collected.po++; pipeline.collected.sales += sales; }
+      } else {
+        const grp = PRE_COST.has(st) ? '생산 중' : (POST_COST.has(st) ? '출하·납품 완료' : '상태미상');
+        if (grp !== '상태미상' || st) {
+          pipeline[grp].po++; pipeline[grp].sales += sales;
+          if (covered) pipeline[grp].cogs_po++;
+          if (!pd || pd.getUTCFullYear() < 2000) { pipeline.no_paydate.po++; pipeline.no_paydate.sales += sales; }
+        }
+      }
+      // 매입 3단 (파이프라인 대상 PO)
+      const inPipe = (pd && pd.getUTCFullYear() >= 2000 && pd <= asof)
+        ? String(pd.getUTCFullYear()) === CUR_Y
+        : (PRE_COST.has(st) || POST_COST.has(st));
+      if (inPipe) {
+        if (covered) { regSales += sales; regCost += cost; unpaidKrw += cost; unpaidPo++; }
+        else { unregSales += sales; unregPo++; }
+      }
+    }
+  }
+
+  const cellRows = [...cells.values()];
+  const schedRows = [...sched.values()];
+  const costRate = regSales ? regCost / regSales : 0;
+  const estKrw = unregSales * costRate;
+  const pipeSales = regSales + unregSales;
+  const totalCost = paidKrw + unpaidKrw + estKrw;
+
+  // 고객 명단 — 목표(SalesTarget)·거래상황·산업군 모두 SharePoint Buyer 리스트에서 읽는다
+  const bmap = new Map();
+  for (const b of buyers) if (b.Title) bmap.set(b.Title, b);
+  const seen = new Set(cellRows.map(c => c.bb));
+  const customers = [...seen].map(bb => {
+    const b = bmap.get(bb) || {};
+    return { bb, name: b[F.name] || bb, status: b[F.deal] || null,
+             industry: b[F.industry] || '미분류', target: Number(b[F.target] || 0) };
+  }).sort((a, b) => b.target - a.target);
+  const annualTarget = buyers.reduce((a, b) => a + Number(b[F.target] || 0), 0) || CFG.annualTarget;
+
+  return {
+    meta: {
+      board: '입금 현황', axis: '입금일(PaymentDate)', as_of: ymd(asof),
+      cutoff_doy: cutoff, current_year: CUR_Y, from_year: FROM_Y,
+      generated: new Date().toISOString(),
+      quality: {
+        payment_date_invalid: anomalies.length, payment_date_missing: 0, total_po: poRows.length,
+        anomalies, anomaly_count: anomalies.length,
+        anomaly_sales: anomalies.reduce((a, x) => a + x.sales, 0),
+        status: [...statusAgg.values()].sort((a, b) => b.po - a.po),
+        normal_missing: {
+          po: [...statusAgg.values()].filter(s => s.pre_cost).reduce((a, s) => a + (s.po - s.cogs_po), 0),
+          sales: [...statusAgg.values()].filter(s => s.pre_cost).reduce((a, s) => a + s.missing_sales, 0),
+        },
+        gaps, gap_count: gaps.length, gap_sales: gaps.reduce((a, g) => a + g.sales, 0),
+      },
+    },
+    annual_target: annualTarget,
+    pipeline,
+    purchase: {
+      sales: pipeSales, po: unpaidPo + unregPo,
+      paid: { krw: paidKrw, po: paidPo },
+      unpaid: { krw: unpaidKrw, po: unpaidPo },
+      unregistered: { krw: estKrw, po: unregPo, sales: unregSales, rate: costRate },
+      total_cost: totalCost,
+      profit: pipeSales - totalCost,
+      margin: pipeSales ? (pipeSales - totalCost) / pipeSales : null,
+      confirmed_profit: regSales - regCost,
+      confirmed_margin: regSales ? (regSales - regCost) / regSales : null,
+      cogs_paydate_coverage: 0,
+    },
+    customers,
+    cells: cellRows,
+    scheduled: schedRows,
+  };
+}
+
+/* ── 진입점 ── */
+async function loadLive(onProgress) {
+  await signIn();
+  if (!account) return null;
+  onProgress && onProgress('PO 리스트 읽는 중…');
+  const po = await fetchList(CFG.lists.po, n => onProgress && onProgress(`PO ${n}건…`));
+  onProgress && onProgress('고객 정보 읽는 중…');
+  const buyers = await fetchList(CFG.lists.buyer);
+  const asof = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  onProgress && onProgress('집계 중…');
+  return { pay: buildPay(po, buyers, asof), ops: opsStub(), _who: account.username };
+}
+
+/* 영업현황은 다음 단계 — 화면 코드가 참조하는 최소 형태만 채워 둔다 */
+function opsStub() {
+  return {
+    _stub: true,
+    meta: { board: '영업 현황', as_of: '', worklog: { total: 0, linked: 0, meet_total: 0, meet_linked: 0 } },
+    facets: { deal: [], industry: [] },
+    summary: { customers: 0, overdue_count: 0, upcoming_del_30d: 0, no_po_90d: 0, no_meet: 0,
+               inflight_po: 0, inflight_sales: 0, inflight_customers: 0, inflight_nodate: 0 },
+    customers: [],
+    inflight: [],
+  };
+}
+
+
+/* ── 화면 시작 ── */
+function setStage(msg, sub) {
+  const s = document.getElementById('stage');
+  if (!s) return;
+  s.querySelector('.stage-msg').textContent = msg;
+  s.querySelector('.stage-sub').textContent = sub || '';
+}
+async function boot() {
+  try {
+    if (CFG.clientId.startsWith('CLIENT_ID')) {
+      setStage('설정이 필요합니다', 'Entra 앱 등록의 클라이언트 ID가 비어 있습니다. build_live.py --client-id <ID> 로 다시 만드세요.');
+      return;
+    }
+    setStage('로그인 확인 중…', '회사 계정으로 인증합니다');
+    const r = await loadLive(m => setStage('데이터 불러오는 중…', m));
+    if (!r) return;                        // 리디렉션 진행 중
+    D = r;
+    document.getElementById('stage').remove();
+    document.getElementById('app').hidden = false;
+    const w = document.getElementById('whoami');
+    if (w) w.textContent = r._who || '';
+    start();
+  } catch (e) {
+    setStage('불러오지 못했습니다', (e && e.message) || String(e));
+    console.error(e);
+  }
+}
+
+let PAY, OPS;
+function start(){
+PAY = D.pay; OPS = D.ops;
+
+/* 1차 라이브: 입금현황만 — 영업현황 탭은 잠그고 안내를 띄운다 */
+const PAY_ONLY = !OPS || OPS._stub;
+if (PAY_ONLY) {
+  document.querySelectorAll('#boardNav button').forEach(b=>{
+    if (b.dataset.board !== 'pay') {
+      b.disabled = true; b.title = '준비 중';
+      b.style.opacity = .45; b.style.cursor = 'default';
+    }
+  });
+  document.getElementById('boardOps').innerHTML =
+    '<div class="board-intro" style="--accent:var(--muted)"><span>🧭</span><span>'
+    + '<b>영업 현황은 준비 중입니다.</b> 라이브 버전은 입금 현황부터 열었습니다. '
+    + '면담 경과일이 KNC WORK LOG(다른 사이트)에 있어 다음 단계에서 연결합니다.</span></div>';
+}
+
+
+/* ── format ── */
+const KRW=n=>'₩'+Math.round(n).toLocaleString('ko-KR');
+const eok=(n,d=1)=>(n/1e8).toFixed(d)+'억';
+const eokS=n=>{const v=n/1e8;return {v:v>=100?v.toFixed(0):v.toFixed(1),u:'억'};};
+const pct=(x,d=1)=>x==null?'-':(x*100).toFixed(d)+'%';
+const spct=(x,d=1)=>(x>=0?'+':'')+(x*100).toFixed(d)+'%';
+const pp=(x,d=1)=>x==null?'-':((x>=0?'+':'')+(x*100).toFixed(d)+'pp');
+const NS='http://www.w3.org/2000/svg';
+const el=(t,a={},k=[])=>{const e=document.createElementNS(NS,t);for(const q in a)e.setAttribute(q,a[q]);
+  (Array.isArray(k)?k:[k]).forEach(c=>c&&e.appendChild(typeof c==='string'?document.createTextNode(c):c));return e;};
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shortName=s=>String(s||'').replace(/\((주|유)\)/g,'').replace(/주식회사/g,'').trim();
+
+/* ── tooltip ── */
+const tipEl=document.getElementById('tip');
+function showTip(h,x,y){tipEl.innerHTML=h;tipEl.style.opacity=1;const r=tipEl.getBoundingClientRect();
+  let px=x+14,py=y+14; if(px+r.width>innerWidth-8)px=x-r.width-14; if(py+r.height>innerHeight-8)py=y-r.height-14;
+  tipEl.style.left=px+'px';tipEl.style.top=py+'px';}
+const hideTip=()=>tipEl.style.opacity=0;
+function bindTip(n,h){n.classList.add('hoverable');
+  n.addEventListener('pointerenter',e=>showTip(h,e.clientX,e.clientY));
+  n.addEventListener('pointermove',e=>showTip(h,e.clientX,e.clientY));
+  n.addEventListener('pointerleave',hideTip);}
+const tt=(t,rows)=>`<div class="tt-t">${esc(t)}</div>`+rows.map(r=>`<div class="tt-r"><span class="k">${esc(r[0])}</span><span>${esc(r[1])}</span></div>`).join('');
+
+function ticks(max,n=4){if(max<=0)return[0,1];const raw=max/n,mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const nm=raw/mag,st=(nm>=5?5:nm>=2?2:nm>=1?1:.5)*mag;const o=[];for(let v=0;v<=max+st*.5;v+=st)o.push(v);return o;}
+
+/* ── chart: grouped columns ── */
+function gcols(mount,{labels,series,fmtY,fmtTip,rotate}){
+  const W=620,H=250,mL=46,mR=10,mT=14,mB=rotate?52:36,iw=W-mL-mR,ih=H-mT-mB;
+  const max=Math.max(...series.flatMap(s=>s.values),0),tk=ticks(max),tmax=tk[tk.length-1]||1;
+  const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  tk.forEach(t=>{const y=mT+ih-(t/tmax)*ih;
+    svg.appendChild(el('line',{x1:mL,x2:W-mR,y1:y,y2:y,stroke:cv('--grid'),'stroke-width':1}));
+    svg.appendChild(el('text',{x:mL-7,y:y+3.5,'text-anchor':'end',class:'ax'},fmtY(t)));});
+  const n=labels.length,gw=iw/n,ns=series.length,bw=Math.max(3,Math.min(18,(gw-6)/ns));
+  labels.forEach((lab,i)=>{const gx=mL+i*gw+gw/2;
+    series.forEach((s,j)=>{const v=s.values[i]||0,bh=(v/tmax)*ih;
+      const x=gx-(ns*bw+2*(ns-1))/2+j*(bw+2),y=mT+ih-bh;
+      const r=el('rect',{x,y,width:bw,height:Math.max(bh,.5),rx:2.5,fill:s.color});
+      bindTip(r,tt(lab,series.map(ss=>[ss.name,fmtTip(ss.values[i]||0)])));svg.appendChild(r);});
+    if(rotate) svg.appendChild(el('text',{x:gx,y:H-mB+14,class:'glab','text-anchor':'end',transform:`rotate(-45 ${gx} ${H-mB+14})`},lab));
+    else svg.appendChild(el('text',{x:gx,y:H-mB+14,'text-anchor':'middle',class:'glab'},lab));});
+  mount.appendChild(svg);
+}
+
+/* ── chart: horizontal bullet (value vs target) ── */
+function bullets(mount,{rows,maxOverride}){
+  const rh=26,gap=7,mT=4,mL=112,mR=56,W=660,H=mT+rows.length*(rh+gap);
+  const max=maxOverride||Math.max(...rows.map(r=>Math.max(r.value,r.target||0)),1),iw=W-mL-mR;
+  const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  rows.forEach((r,i)=>{const y=mT+i*(rh+gap);
+    svg.appendChild(el('rect',{x:mL,y:y+rh/2-5,width:iw,height:10,rx:5,fill:cv('--track')}));
+    const bw=(r.value/max)*iw;
+    const col=r.progress!=null&&r.progress>=0.5?cv('--s1'):(r.progress!=null&&r.progress<0.3?cv('--s2'):cv('--s1'));
+    const bar=el('rect',{x:mL,y:y+rh/2-5,width:Math.max(bw,1),height:10,rx:5,fill:col});
+    bindTip(bar,tt(r.name,[['실적',KRW(r.value)],['목표',r.target?KRW(r.target):'-'],['달성율',pct(r.progress)]]));
+    svg.appendChild(bar);
+    if(r.target){const tx=mL+(r.target/max)*iw;
+      svg.appendChild(el('line',{x1:tx,x2:tx,y1:y+rh/2-9,y2:y+rh/2+9,stroke:cv('--ink'),'stroke-width':2}));}
+    svg.appendChild(el('text',{x:mL-9,y:y+rh/2+4,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
+    svg.appendChild(el('text',{x:W-mR+8,y:y+rh/2+4,class:'dlab',
+      fill:r.progress>=0.5?cv('--good-ink'):cv('--secondary')},pct(r.progress,0)));});
+  mount.appendChild(svg);
+  const lg=document.createElement('div');lg.className='legend';
+  lg.innerHTML=`<span><i style="background:var(--s1)"></i>실적</span><span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>연간 목표</span><span style="color:var(--muted)">우측 = 달성율</span>`;
+  mount.appendChild(lg);
+}
+
+/* ── chart: lollipop (elapsed days) ── */
+function lollipop(mount,{rows,fmtV,threshold,thLabel}){
+  const rh=24,gap=6,mT=16,mL=112,mR=52,W=660,H=mT+rows.length*(rh+gap);
+  const max=Math.max(...rows.map(r=>r.value),threshold||0,1),iw=W-mL-mR;
+  const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  if(threshold){const tx=mL+(threshold/max)*iw;
+    svg.appendChild(el('line',{x1:tx,x2:tx,y1:mT-8,y2:H-4,stroke:cv('--critical'),'stroke-width':1,'stroke-dasharray':'3 3','stroke-opacity':.6}));
+    svg.appendChild(el('text',{x:tx+4,y:mT-10,class:'glab',fill:cv('--bad-ink'),'font-size':10},thLabel||''));}
+  rows.forEach((r,i)=>{const y=mT+i*(rh+gap)+rh/2,x=mL+(r.value/max)*iw;
+    const hot=threshold&&r.value>threshold;
+    svg.appendChild(el('line',{x1:mL,x2:x,y1:y,y2:y,stroke:hot?cv('--critical'):cv('--s1'),'stroke-width':2,'stroke-opacity':hot?.5:.32}));
+    const dot=el('circle',{cx:x,cy:y,r:5,fill:hot?cv('--critical'):cv('--s1'),stroke:cv('--card'),'stroke-width':2});
+    bindTip(dot,tt(r.name,r.rows||[['값',fmtV(r.value)]]));svg.appendChild(dot);
+    svg.appendChild(el('text',{x:mL-9,y:y+4,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
+    svg.appendChild(el('text',{x:W-mR+8,y:y+4,class:'dlab',fill:hot?cv('--bad-ink'):cv('--secondary')},fmtV(r.value)));});
+  mount.appendChild(svg);
+}
+
+/* ── chart: goal bar (목표 대비 누적 진행) ── */
+function goalBar(mount,{target,segments,gap,gapName}){
+  const W=660,H=62,mT=8,bh=30;
+  const scale=Math.max(target,segments.reduce((a,s)=>a+s.value,0));
+  const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  svg.appendChild(el('rect',{x:0,y:mT,width:W,height:bh,rx:5,fill:cv('--track')}));
+  let x=0;
+  segments.forEach((s,i)=>{const w=(s.value/scale)*W;
+    const r=el('rect',{x:x+(i?1:0),y:mT,width:Math.max(w-(i?1:0),1),height:bh,fill:s.color,
+      rx:i===0?5:2});
+    bindTip(r,tt(s.name,[['금액',KRW(s.value)],['건수',s.count+'건'],['목표 대비',pct(s.value/target)]]));
+    svg.appendChild(r);
+    if(w>84) svg.appendChild(el('text',{x:x+11,y:mT+19,class:'dlab',fill:'#fff'},eok(s.value,1)));
+    x+=w;});
+  if(gap>0){const gw=(gap/scale)*W;
+    const g=el('rect',{x:x+1,y:mT,width:Math.max(gw-1,1),height:bh,rx:5,fill:'none',
+      stroke:cv('--critical'),'stroke-width':1.4,'stroke-dasharray':'4 3','stroke-opacity':.75});
+    bindTip(g,tt(gapName,[['금액',KRW(gap)],['목표 대비',pct(gap/target)]]));
+    svg.appendChild(g);
+    if(gw>84) svg.appendChild(el('text',{x:x+11,y:mT+19,class:'dlab',fill:cv('--bad-ink')},eok(gap,1)));}
+  // 목표선
+  const tx=(target/scale)*W;
+  svg.appendChild(el('line',{x1:tx,x2:tx,y1:mT-6,y2:mT+bh+6,stroke:cv('--ink'),'stroke-width':2}));
+  svg.appendChild(el('text',{x:tx-5,y:mT-9,'text-anchor':'end',class:'dlab'},'목표 '+eok(target,0)));
+  mount.appendChild(svg);
+  const lg=document.createElement('div');lg.className='legend';
+  lg.innerHTML=segments.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.name)} ${eok(s.value,1)} · ${s.count}건</span>`).join('')
+    +(gap>0?`<span><i style="background:transparent;border:1.5px dashed var(--critical)"></i>${esc(gapName)} ${eok(gap,1)}</span>`:'');
+  mount.appendChild(lg);
+}
+
+/* ── multi-select (전체 = 아무것도 선택 안 함) ── */
+let msSeq=0;
+function multiSelect(mount,{label,options,selected,onChange,allLabel}){
+  const id='ms'+(++msSeq);
+  const wrap=document.createElement('div');wrap.className='ms';
+  wrap.innerHTML=`<button class="ms-btn" id="${id}" aria-expanded="false" aria-haspopup="true">
+      <span class="k">${esc(label)}</span><span class="v"></span><span class="car"></span></button>
+    <div class="ms-pop" hidden role="group" aria-labelledby="${id}">
+      <div class="ms-tools"><button data-a="all">전체 선택</button><button data-a="none">전체 해제</button></div>
+      ${options.map(o=>`<label><input type="checkbox" value="${esc(o.value)}" ${selected.has(o.value)?'checked':''}>
+        <span class="nm">${esc(o.label)}</span>${o.sub?`<span class="sub">${esc(o.sub)}</span>`:''}</label>`).join('')}
+    </div>`;
+  mount.appendChild(wrap);
+  const btn=wrap.querySelector('.ms-btn'),pop=wrap.querySelector('.ms-pop'),vEl=wrap.querySelector('.v');
+  const sync=()=>{
+    if(!selected.size||selected.size===options.length){
+      vEl.textContent=allLabel||'전체';
+      const c=wrap.querySelector('.cnt'); if(c)c.remove();
+    }else{
+      const names=options.filter(o=>selected.has(o.value)).map(o=>o.label);
+      vEl.textContent=names.length<=2?names.join(', '):names[0]+' 외';
+      if(!wrap.querySelector('.cnt')){const s=document.createElement('span');s.className='cnt';btn.insertBefore(s,btn.querySelector('.car'));}
+      wrap.querySelector('.cnt').textContent=selected.size;
+    }};
+  sync();
+  const close=()=>{pop.hidden=true;btn.setAttribute('aria-expanded','false');};
+  btn.addEventListener('click',e=>{e.stopPropagation();
+    document.querySelectorAll('.ms-pop').forEach(p=>{if(p!==pop){p.hidden=true;p.previousElementSibling.setAttribute('aria-expanded','false');}});
+    pop.hidden=!pop.hidden;btn.setAttribute('aria-expanded',String(!pop.hidden));});
+  pop.addEventListener('click',e=>e.stopPropagation());
+  pop.addEventListener('change',e=>{
+    if(e.target.type!=='checkbox')return;
+    if(e.target.checked)selected.add(e.target.value); else selected.delete(e.target.value);
+    sync();onChange(selected);});
+  pop.querySelectorAll('.ms-tools button').forEach(b=>b.addEventListener('click',()=>{
+    const all=b.dataset.a==='all';
+    selected.clear(); if(all)options.forEach(o=>selected.add(o.value));
+    pop.querySelectorAll('input').forEach(i=>i.checked=all);
+    sync();onChange(selected);}));
+  document.addEventListener('click',close);
+  return wrap;
+}
+
+/* ── table builder ── */
+function table(cols,rows,rowClass){
+  return `<div class="tbl-wrap"><table class="dt"><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr class="${rowClass&&rowClass(r)?'hot':''}">${r.cells.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ── card with chart/table switch ── */
+let cardSeq=0;
+function vizCard(mount,{title,note,draw,tableHTML,defaultView}){
+  const id='vz'+(++cardSeq);
+  const card=document.createElement('div');card.className='card';
+  card.innerHTML=`<div class="card-head"><div><h3>${title}</h3>${note?`<div class="note">${note}</div>`:''}</div>
+    ${tableHTML?`<div class="vswitch" role="group" aria-label="보기 전환">
+      <button data-v="chart" aria-pressed="${defaultView!=='table'}">그래프</button>
+      <button data-v="table" aria-pressed="${defaultView==='table'}">표</button></div>`:''}</div>
+    <div class="vbody" id="${id}"></div>`;
+  mount.appendChild(card);
+  const body=card.querySelector('#'+id);
+  const render=v=>{body.innerHTML='';
+    if(v==='table'&&tableHTML) body.innerHTML=tableHTML;
+    else draw(body);};
+  render(defaultView==='table'?'table':'chart');
+  card.querySelectorAll('.vswitch button').forEach(b=>b.addEventListener('click',()=>{
+    card.querySelectorAll('.vswitch button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+    render(b.dataset.v);}));
+  return card;
+}
+
+/* ════════ BOARD 1 · 입금 현황 ════════ */
+const PAY_YEARS=[...new Set(PAY.cells.map(c=>c.ym.slice(0,4)))].sort();
+const CUR_Y=PAY.meta.current_year;
+const paySelYears=new Set([CUR_Y]);
+const paySelCust=new Set();
+
+function payAgg(cells){
+  const a={sales:0,cost:0,cogs:0,csales:0,po:0,col_sales:0,col_cost:0,col_cogs:0,col_csales:0,col_po:0,
+           ytd_sales:0,ytd_cost:0,ytd_cogs:0,ytd_csales:0,ytd_po:0};
+  cells.forEach(c=>{for(const k in a)a[k]+=c[k]||0;});
+  a.coverage=a.col_sales?a.col_csales/a.col_sales:0;
+  // 영업이익 = 매출 − (매입 + 부대비 + 물류비) / 매출총이익 = 매출 − 매입(COGS만, Power BI 정의)
+  a.margin=a.col_csales?(a.col_csales-a.col_cost)/a.col_csales:null;
+  a.gmargin=a.col_csales?(a.col_csales-a.col_cogs)/a.col_csales:null;
+  a.confirmed=a.col_csales-a.col_cost;
+  a.est=a.margin!=null?a.col_sales*a.margin:0;
+  a.gross=a.gmargin!=null?a.col_sales*a.gmargin:0;
+  a.ytd_margin=a.ytd_csales?(a.ytd_csales-a.ytd_cost)/a.ytd_csales:null;
+  a.ytd_est=a.ytd_margin!=null?a.ytd_sales*a.ytd_margin:0;
+  return a;
+}
+const payCells=(years,custs)=>PAY.cells.filter(c=>
+  (!years.size||years.has(c.ym.slice(0,4)))&&(!custs.size||custs.has(c.bb)));
+
+/* 전년 대비: 연도 1개 선택 시. 당해연도는 '연중 같은 시점'끼리 비교 */
+function payYoY(){
+  if(paySelYears.size!==1)return null;
+  const y=[...paySelYears][0],py=String(+y-1);
+  if(!PAY_YEARS.includes(py))return null;
+  const c=payAgg(payCells(new Set([y]),paySelCust)),p=payAgg(payCells(new Set([py]),paySelCust));
+  const partial=(y===CUR_Y);
+  const g=(a,k)=>partial
+    ?(k==='sales'?a.ytd_sales:k==='est'?a.ytd_est:k==='margin'?a.ytd_margin:a.ytd_po)
+    :(k==='sales'?a.col_sales:k==='est'?a.est:k==='margin'?a.margin:a.col_po);
+  const rate=k=>{const cvv=g(c,k),pv=g(p,k);return pv?(cvv-pv)/pv:null;};
+  return {label:partial?(py+'년 동기'):(py+'년'),partial,
+    sales:rate('sales'),est:rate('est'),po:rate('po'),
+    marginPP:(g(c,'margin')!=null&&g(p,'margin')!=null)?g(c,'margin')-g(p,'margin'):null};
+}
+const dHTML=(v,lab,isPP)=>{
+  if(v==null)return '<div class="sub">비교 기준 없음</div>';
+  const up=v>=0,cls=Math.abs(v)<1e-9?'flat':(up?'up':'down');
+  return `<div class="delta ${cls}">${up?'▲':'▼'} ${isPP?pp(v):spct(v)}
+    <span style="color:var(--muted);font-weight:500">vs ${esc(lab)}</span></div>`;
+};
+
+function renderPay(){
+  const M=document.getElementById('boardPay');M.innerHTML='';
+  M.insertAdjacentHTML('beforeend',`
+    <div class="board-intro" style="--accent:var(--critical)">
+      <span>🔴</span><span><b>지금 돈이 어디까지 들어왔나</b> — 축: <span class="axis">입금일(PaymentDate)</span>.
+      Power BI '입금 현황' 페이지와 같은 기준이라 통계분석 보드(선적일 기준)와 수치가 다릅니다.
+      입금일이 기준일 이후면 <b>수금 예정</b>으로 분리해 집계합니다.</span></div>
+    <div class="filters" id="payFilters"><span class="flab">필터</span></div>
+    <div class="grid g4" id="payKpi"></div>
+    <div id="paySections"></div>`);
+
+  const ff=document.getElementById('payFilters');
+  multiSelect(ff,{label:'연도',allLabel:'전체 연도',
+    options:PAY_YEARS.slice().reverse().map(y=>({value:y,label:y+'년'})),
+    selected:paySelYears,onChange:()=>renderPay()});
+  const custOpts=PAY.customers.filter(c=>PAY.cells.some(x=>x.bb===c.bb))
+    .map(c=>({value:c.bb,label:shortName(c.name),sub:c.target?eok(c.target,1):''}));
+  multiSelect(ff,{label:'고객',allLabel:'전체 고객',options:custOpts,
+    selected:paySelCust,onChange:()=>renderPay()});
+  const rst=document.createElement('button');rst.className='reset';rst.textContent='초기화';
+  rst.addEventListener('click',()=>{paySelYears.clear();paySelYears.add(CUR_Y);paySelCust.clear();renderPay();});
+  ff.appendChild(rst);
+  ff.insertAdjacentHTML('beforeend',
+    '<span class="hint">Power BI 슬라이서 대응 — 복수 선택 가능, 아무것도 안 고르면 전체</span>');
+
+  const A=payAgg(payCells(paySelYears,paySelCust)),Y=payYoY();
+  const scope=paySelYears.size?[...paySelYears].sort().join(', '):'전체 연도';
+  const s=eokS(A.col_sales),e=eokS(A.est);
+  document.getElementById('payKpi').innerHTML=`
+    <div class="card kpi accent"><div class="lab">입금 완료 <span style="color:var(--muted)">· ${esc(scope)}</span></div>
+      <div class="val num">${s.v}<span class="u">${s.u}</span></div>
+      <div class="sub">${KRW(A.col_sales)} · ${A.col_po}건</div>
+      ${Y?dHTML(Y.sales,Y.label):''}</div>
+    <div class="card kpi"><div class="lab">예상 매출이익</div>
+      <div class="val num">${e.v}<span class="u">${e.u}</span></div>
+      <div class="sub">확정 ${eok(A.confirmed,1)} · 원가등록 ${pct(A.coverage,0)} 반영 추정</div>
+      ${Y?dHTML(Y.est,Y.label):''}</div>
+    <div class="card kpi"><div class="lab">예상 매출이익률</div>
+      <div class="val num">${A.margin!=null?(A.margin*100).toFixed(1):'-'}<span class="u">%</span></div>
+      <div class="sub">물류·부대비 ${eok(A.col_cost-A.col_cogs,2)}(매출의 ${pct((A.col_cost-A.col_cogs)/A.col_sales,1)}) 차감 후
+        <span style="color:var(--muted)">· 미차감 시 ${pct(A.gmargin,1)}</span></div>
+      ${Y?dHTML(Y.marginPP,Y.label,true):''}</div>
+    <div class="card kpi"><div class="lab">입금 PO</div>
+      <div class="val num">${A.col_po}<span class="u">건</span></div>
+      <div class="sub">평균 ${A.col_po?KRW(A.col_sales/A.col_po):'-'}/건</div>
+      ${Y?dHTML(Y.po,Y.label):''}</div>`;
+
+  const S=document.getElementById('paySections');
+
+  /* 매출 파이프라인 — 당해연도·전체고객일 때만 (Status 기준이라 고객 필터와 축이 다름) */
+  if(paySelYears.size===1&&paySelYears.has(CUR_Y)&&!paySelCust.size){
+    const P=PAY.pipeline,target=PAY.annual_target;
+    const done=P.collected,ship=P['출하·납품 완료'],prod=P['생산 중'];
+    const secured=done.sales+ship.sales+prod.sales;
+    const gap=Math.max(target-secured,0);
+    const sec=document.createElement('section');
+    sec.innerHTML=`<div class="sec-head"><span class="eyebrow">전망</span><h2>매출 파이프라인 — 받은 돈 · 받을 돈</h2>
+      <span class="rule"></span><span class="sub">기준일 ${PAY.meta.as_of}</span></div>
+      <div class="grid g-wide" id="rcRow"></div>`;
+    S.appendChild(sec);
+    const rcRow=document.getElementById('rcRow');
+    vizCard(rcRow,{title:`${CUR_Y} 목표 ${eok(target,1)} 대비 확보 매출`,
+      note:'이미 수금된 돈 + 발주돼서 진행 중인 물량 — 나머지는 신규 수주로 채워야 합니다',
+      draw:m=>{goalBar(m,{target,segments:[
+          {name:'수금 완료',value:done.sales,count:done.po,color:cv('--s1')},
+          {name:'출하·납품 완료(미수금)',value:ship.sales,count:ship.po,color:cv('--s3')},
+          {name:'생산 중',value:prod.sales,count:prod.po,color:cv('--s4')}],
+          gap,gapName:'신규 수주 필요'});
+        const b=document.createElement('div');
+        b.style.cssText='margin-top:12px;display:flex;gap:24px;flex-wrap:wrap;align-items:baseline';
+        b.innerHTML=`<div><div style="font-size:24px;font-weight:680" class="num">${eok(secured,1)}</div>
+            <div style="font-size:11.5px;color:var(--muted)">확보 매출 · 목표의 ${pct(secured/target,1)}</div></div>
+          <div><div style="font-size:24px;font-weight:680;color:${gap>0?'var(--bad-ink)':'var(--good-ink)'}" class="num">${gap>0?eok(gap,1):'달성'}</div>
+            <div style="font-size:11.5px;color:var(--muted)">${gap>0?'신규 수주로 채울 금액':'목표 초과'}</div></div>
+          <div><div style="font-size:24px;font-weight:680" class="num">${eok(ship.sales+prod.sales,1)}</div>
+            <div style="font-size:11.5px;color:var(--muted)">아직 못 받은 돈 (${ship.po+prod.po}건)</div></div>`;
+        m.appendChild(b);},
+      tableHTML:table(['단계','금액','건수','목표 대비','원가 등록'],[
+        {cells:['① 수금 완료',KRW(done.sales),done.po+'건',pct(done.sales/target),'-']},
+        {cells:['② 출하·납품 완료 (미수금)',KRW(ship.sales),ship.po+'건',pct(ship.sales/target),
+          `${ship.cogs_po}/${ship.po}건`]},
+        {cells:['③ 생산 중',KRW(prod.sales),prod.po+'건',pct(prod.sales/target),
+          `<span class="pill mut">${prod.cogs_po}/${prod.po}건</span>`]},
+        {cells:['<b>확보 매출 합계</b>','<b>'+KRW(secured)+'</b>',
+          '<b>'+(done.po+ship.po+prod.po)+'건</b>','<b>'+pct(secured/target)+'</b>','-']},
+        {cells:['신규 수주 필요',KRW(gap),'-',pct(gap/target),'-']}])});
+    /* 매입 3단 + 예상 매출이익 */
+    const PU=PAY.purchase;
+    vizCard(rcRow,{title:'매입 · 예상 매출이익',
+      note:`매입을 지급완료·미지급·미등록(비례추정)으로 나눠 계산한 이익 — 대상 PO ${PU.po}건`,
+      draw:m=>{
+        goalBar(m,{target:PU.sales,segments:[
+          {name:'지급 완료',value:PU.paid.krw,count:PU.paid.po,color:cv('--s2')},
+          {name:'미지급',value:PU.unpaid.krw,count:PU.unpaid.po,color:cv('--s4')},
+          {name:'미등록(추정)',value:PU.unregistered.krw,count:PU.unregistered.po,color:cv('--s5')}],
+          gap:Math.max(PU.sales-PU.total_cost,0),gapName:'예상 매출이익'});
+        const b=document.createElement('div');
+        b.style.cssText='margin-top:12px;display:flex;gap:24px;flex-wrap:wrap;align-items:baseline';
+        b.innerHTML=`<div><div style="font-size:24px;font-weight:680" class="num">${eok(PU.profit,1)}</div>
+            <div style="font-size:11.5px;color:var(--muted)">예상 매출이익</div></div>
+          <div><div style="font-size:24px;font-weight:680;color:var(--good-ink)" class="num">${pct(PU.margin,1)}</div>
+            <div style="font-size:11.5px;color:var(--muted)">예상 매출이익율</div></div>
+          <div><div style="font-size:24px;font-weight:680" class="num">${eok(PU.total_cost,1)}</div>
+            <div style="font-size:11.5px;color:var(--muted)">예상 총매입</div></div>`;
+        m.appendChild(b);
+        if(PU.cogs_paydate_coverage<0.5){
+          const w=document.createElement('div');w.className='note';w.style.marginTop='10px';
+          w.innerHTML=`⚠️ 매입 <b>지급일</b> 기록률이 ${pct(PU.cogs_paydate_coverage,0)}에 그쳐,
+            '지급 완료'와 '미지급' 구분은 아직 신뢰하기 어렵습니다. 합계(예상 총매입)는 유효합니다.`;
+          m.appendChild(w);}},
+      tableHTML:table(['구분','금액','건수','매출 대비','비고'],[
+        {cells:['① 지급 완료',KRW(PU.paid.krw),PU.paid.po+'건',pct(PU.paid.krw/PU.sales),
+          `COGS 지급일 기록률 ${pct(PU.cogs_paydate_coverage,0)}`]},
+        {cells:['② 미지급 (등록됨)',KRW(PU.unpaid.krw),PU.unpaid.po+'건',pct(PU.unpaid.krw/PU.sales),'원가는 등록, 송금 전']},
+        {cells:['③ 미등록 (비례 추정)',KRW(PU.unregistered.krw),PU.unregistered.po+'건',
+          pct(PU.unregistered.krw/PU.sales),`매출 ${eok(PU.unregistered.sales,2)} × 원가율 ${pct(PU.unregistered.rate,1)}`]},
+        {cells:['<b>예상 총매입</b>','<b>'+KRW(PU.total_cost)+'</b>','-','<b>'+pct(PU.total_cost/PU.sales)+'</b>','']},
+        {cells:['<b>예상 매출이익</b>','<b>'+KRW(PU.profit)+'</b>','-','<b>'+pct(PU.margin)+'</b>','물류·부대비 차감 후']},
+        {cells:['(참고) 원가 확정분만',KRW(PU.confirmed_profit),'-',pct(PU.confirmed_margin),'추정 제외']}])});
+
+    const byM={};
+    PAY.scheduled.forEach(x=>{(byM[x.ym]=byM[x.ym]||{ym:x.ym,sales:0,po:0});
+      byM[x.ym].sales+=x.sales;byM[x.ym].po+=x.po;});
+    const fut=Object.values(byM).sort((a,b)=>a.ym<b.ym?-1:1);
+    vizCard(rcRow,{title:'월별 수금 예정',note:'앞으로 들어올 돈 — 자금 계획용',
+      draw:m=>{if(!fut.length){m.innerHTML='<div class="note" style="padding:20px 0">예정된 수금이 없습니다.</div>';return;}
+        gcols(m,{labels:fut.map(x=>x.ym.slice(2)),
+          series:[{name:'수금 예정',color:cv('--s4'),values:fut.map(x=>x.sales)}],
+          fmtY:v=>eok(v,1),fmtTip:v=>KRW(v)});},
+      tableHTML:table(['월','예정 금액','건수'],fut.map(x=>({cells:[x.ym,KRW(x.sales),x.po+'건']})))});
+  }
+
+  /* 월별 추이 */
+  const secM=document.createElement('section');
+  secM.innerHTML='<div class="sec-head"><span class="eyebrow">추이</span><h2>월별 입금</h2><span class="rule"></span></div><div id="moRow"></div>';
+  S.appendChild(secM);
+  const mMap={};
+  payCells(paySelYears,paySelCust).forEach(c=>{
+    const m=mMap[c.ym]||(mMap[c.ym]={ym:c.ym,sales:0,csales:0,cost:0,cogs:0,po:0});
+    m.sales+=c.col_sales;m.csales+=c.col_csales;m.cost+=c.col_cost;m.cogs+=c.col_cogs;m.po+=c.col_po;});
+  const mo=Object.values(mMap).filter(m=>m.po>0).sort((a,b)=>a.ym<b.ym?-1:1)
+    .map(m=>({...m,est:m.csales?m.sales*((m.csales-m.cost)/m.csales):0,
+              margin:m.csales?(m.csales-m.cost)/m.csales:null,
+              gross:m.csales?m.sales*((m.csales-m.cogs)/m.csales):0,
+              gmargin:m.csales?(m.csales-m.cogs)/m.csales:null}));
+  vizCard(document.getElementById('moRow'),{title:'월별 입금 완료 · 예상 매출이익',
+    note:'Power BI의 YearMonth 표를 그래프로 — 계절성과 이익 동행이 한눈에',
+    draw:m=>{if(!mo.length){m.innerHTML='<div class="note" style="padding:20px 0">데이터가 없습니다.</div>';return;}
+      const lg=document.createElement('div');lg.className='legend';
+      lg.innerHTML='<span><i style="background:var(--s1)"></i>입금 완료</span><span><i style="background:var(--s2)"></i>예상 매출이익</span>';
+      m.appendChild(lg);
+      gcols(m,{labels:mo.map(x=>x.ym.slice(2)),series:[
+        {name:'입금 완료',color:cv('--s1'),values:mo.map(x=>x.sales)},
+        {name:'예상 매출이익',color:cv('--s2'),values:mo.map(x=>x.est)}],
+        fmtY:v=>eok(v,1),fmtTip:v=>KRW(v),rotate:mo.length>14});},
+    tableHTML:table(['월','PO 건수','매출입금액','매입송금액','매출총이익','매출이익률','영업이익','영업이익률'],
+      mo.map(x=>({cells:[x.ym,x.po+'건',KRW(x.sales),KRW(x.cogs),KRW(x.gross),pct(x.gmargin),
+        KRW(x.est),pct(x.margin)]})))});
+
+  /* 연도별 (연도 필터 무시 — 추세용) */
+  const secY=document.createElement('section');
+  secY.innerHTML=`<div class="sec-head"><span class="eyebrow">추이</span><h2>연도별 입금</h2><span class="rule"></span>
+    <span class="sub">연도 필터와 무관한 전체 추세 · 고객 필터는 적용</span></div><div id="yrRow"></div>`;
+  S.appendChild(secY);
+  const yMap={};
+  payCells(new Set(),paySelCust).forEach(c=>{const y=c.ym.slice(0,4);
+    const o=yMap[y]||(yMap[y]={year:y,sales:0,csales:0,cost:0,po:0});
+    o.sales+=c.col_sales;o.csales+=c.col_csales;o.cost+=c.col_cost;o.po+=c.col_po;});
+  const ys=Object.values(yMap).filter(y=>y.sales>0).sort((a,b)=>a.year<b.year?-1:1)
+    .map(y=>({...y,margin:y.csales?(y.csales-y.cost)/y.csales:null,
+              est:y.csales?y.sales*((y.csales-y.cost)/y.csales):0,
+              coverage:y.sales?y.csales/y.sales:0}));
+  vizCard(document.getElementById('yrRow'),{title:'연도별 입금 완료 · 예상 매출이익',
+    note:`${CUR_Y}년은 진행 중 (기준일 ${PAY.meta.as_of}까지 수금분)`,
+    draw:m=>{if(!ys.length){m.innerHTML='<div class="note" style="padding:20px 0">데이터가 없습니다.</div>';return;}
+      const lg=document.createElement('div');lg.className='legend';
+      lg.innerHTML='<span><i style="background:var(--s1)"></i>입금 완료</span><span><i style="background:var(--s3)"></i>예상 매출이익</span>';
+      m.appendChild(lg);
+      gcols(m,{labels:ys.map(y=>y.year),series:[
+        {name:'입금 완료',color:cv('--s1'),values:ys.map(y=>y.sales)},
+        {name:'예상 매출이익',color:cv('--s3'),values:ys.map(y=>y.est)}],fmtY:v=>eok(v,0),fmtTip:v=>KRW(v)});},
+    tableHTML:table(['연도','입금 완료','예상 매출이익','예상 이익률','원가등록','PO'],
+      ys.map(y=>({cells:[y.year,KRW(y.sales),KRW(y.est),pct(y.margin),pct(y.coverage,0),y.po+'건']})))});
+
+  /* 데이터 점검 */
+  const Q=PAY.meta.quality;
+  if(Q.anomaly_count||Q.gap_count){
+    const secQ=document.createElement('section');
+    secQ.innerHTML=`<div class="sec-head"><span class="eyebrow">점검</span><h2>고쳐야 할 데이터</h2><span class="rule"></span>
+      <span class="sub">SharePoint에서 수정 대상</span></div><div class="grid g2" id="qRow"></div>`;
+    S.appendChild(secQ);
+    const qRow=document.getElementById('qRow');
+    if(Q.anomaly_count){
+      qRow.insertAdjacentHTML('beforeend',`<div class="card">
+        <div class="card-head"><div><h3>입금일 오류 — ${Q.anomaly_count}건 · ${eok(Q.anomaly_sales,2)}</h3>
+        <div class="note">입금일이 <b>1970-01-01</b> 등 잘못된 값입니다. 연도 집계에서 빠지므로 실제 입금 예정일로 고쳐야 합니다.</div></div></div>
+        ${table(['PO','고객','상태','발주일','ETD','금액'],
+          Q.anomalies.map(a=>({cells:[esc(a.po),esc(a.bb),esc(a.status),a.podate,a.etd,KRW(a.sales)]})))}
+      </div>`);
+    }
+    if(Q.gap_count){
+      qRow.insertAdjacentHTML('beforeend',`<div class="card">
+        <div class="card-head"><div><h3>원가 누락 — ${Q.gap_count}건 · ${eok(Q.gap_sales,2)}</h3>
+        <div class="note">이미 <b>선적·납품된</b> PO인데 매입 원가가 없습니다. (생산 전 단계는 정상이라 제외)</div></div></div>
+        ${table(['PO','고객','상태','ETD','납품','금액'],
+          Q.gaps.map(g=>({cells:[esc(g.po),esc(g.bb),esc(g.status),g.etd,g.delivery,KRW(g.sales)]})))}
+      </div>`);
+    }
+  }
+
+  /* 고객별 */
+  const secC=document.createElement('section');
+  secC.innerHTML=`<div class="sec-head"><span class="eyebrow">고객</span><h2>고객별 목표 달성</h2><span class="rule"></span>
+    <span class="sub">${esc(scope)} 입금 기준</span></div><div id="cuRow"></div>`;
+  S.appendChild(secC);
+  const cMap={};
+  payCells(paySelYears,paySelCust).forEach(c=>{cMap[c.bb]=(cMap[c.bb]||0)+c.col_sales;});
+  const showTarget=paySelYears.size===1&&paySelYears.has(CUR_Y);
+  const cs=PAY.customers.filter(c=>c.target>0&&(!paySelCust.size||paySelCust.has(c.bb)))
+    .map(c=>({...c,val:cMap[c.bb]||0}))
+    .filter(c=>c.target>=25000000||c.val>0)
+    .sort((a,b)=>b.target-a.target).slice(0,16);
+  vizCard(document.getElementById('cuRow'),
+    {title:showTarget?'고객별 입금 실적 vs 연간 목표':'고객별 입금 실적',
+     note:showTarget?'Power BI 표의 여러 열을 하나의 그래프로 — 목표 미달 고객이 즉시 보임'
+                    :'선택 기간의 고객별 입금액 (목표는 2026년 기준이라 표시하지 않음)',
+    draw:m=>{if(!cs.length){m.innerHTML='<div class="note" style="padding:20px 0">해당 고객이 없습니다.</div>';return;}
+      bullets(m,{rows:cs.map(c=>({name:c.name,value:c.val,
+        target:showTarget?c.target:0,progress:showTarget&&c.target?c.val/c.target:null}))});},
+    tableHTML:table(showTarget?['고객','입금액','연간 목표','달성율','상태']:['고객','입금액','상태'],
+      cs.map(c=>({cells:showTarget
+        ?[esc(shortName(c.name)),KRW(c.val),KRW(c.target),
+          `<span class="pill ${c.val/c.target>=0.5?'ok':c.val/c.target>=0.3?'warn':'bad'}">${pct(c.val/c.target,0)}</span>`,
+          esc(c.status||'-')]
+        :[esc(shortName(c.name)),KRW(c.val),esc(c.status||'-')],
+        r:showTarget&&c.target?c.val/c.target:1})),
+      r=>r.r<0.3)});
+}
+
+/* ════════ BOARD 2 · 영업 현황 ════════ */
+const OPS_TEST={
+  overdue:x=>x.overdue>0,
+  quiet:x=>x.po_elapsed>90,
+  soon:x=>x.next_del_in!=null&&x.next_del_in>=0&&x.next_del_in<=30,
+  nomeet:x=>x.meet_elapsed==null,
+  behind:x=>x.progress!=null&&x.progress<0.3,
+};
+const OPS_CONDS=[
+  {value:'overdue',label:'발주 지연',sub:String(OPS.customers.filter(OPS_TEST.overdue).length)},
+  {value:'quiet',label:'90일+ 무발주',sub:String(OPS.customers.filter(OPS_TEST.quiet).length)},
+  {value:'soon',label:'30일내 납품예정',sub:String(OPS.customers.filter(OPS_TEST.soon).length)},
+  {value:'nomeet',label:'면담 기록 없음',sub:String(OPS.customers.filter(OPS_TEST.nomeet).length)},
+  {value:'behind',label:'목표 30% 미만',sub:String(OPS.customers.filter(OPS_TEST.behind).length)},
+];
+const opsConds=new Set(),opsCust=new Set(),opsDeal=new Set(),opsInd=new Set();
+
+function opsRows(){
+  let r=OPS.customers.slice();
+  if(opsCust.size)r=r.filter(x=>opsCust.has(x.bb));
+  if(opsDeal.size)r=r.filter(x=>opsDeal.has(x.deal));
+  if(opsInd.size)r=r.filter(x=>opsInd.has(x.industry));
+  if(opsConds.size)r=r.filter(x=>[...opsConds].some(k=>OPS_TEST[k](x)));
+  return r;
+}
+const confPill=c=>`<span class="pill ${c==='높음'?'ok':c==='보통'?'warn':'mut'}">${esc(c)}</span>`;
+const gapCell=r=>r.avg_gap?`${r.avg_gap}일 ${confPill(r.confidence)}`:'<span class="pill mut">표본부족</span>';
+const meetCell=r=>r.meet_elapsed==null
+  ?'<span class="pill mut">기록없음</span>'
+  :`${r.meet_elapsed}일<span class="mutx"> · ${r.meet_last}</span>`;
+
+/* 고객별 발주경과 vs 그 고객의 평균주기 + 면담경과 */
+function opsBars(mount,{rows}){
+  const rh=30,gap=9,mT=20,mL=118,mR=104,W=680,H=mT+rows.length*(rh+gap);
+  const max=Math.max(...rows.flatMap(r=>[r.po_elapsed,r.meet_elapsed||0,r.avg_gap||0]),1);
+  const iw=W-mL-mR;
+  const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  svg.appendChild(el('text',{x:mL,y:10,class:'glab','font-size':10},'막대=경과일 · │=그 고객의 평균 발주주기'));
+  rows.forEach((r,i)=>{
+    const y=mT+i*(rh+gap);
+    const late=r.overdue>0;
+    // 발주 경과
+    const w1=(r.po_elapsed/max)*iw;
+    const b1=el('rect',{x:mL,y,width:Math.max(w1,1),height:12,rx:3,fill:late?cv('--critical'):cv('--s1')});
+    bindTip(b1,tt(r.name,[['최종 발주',r.last_po],['경과',r.po_elapsed+'일'],
+      ['평균 발주주기',r.avg_gap?r.avg_gap+'일 ('+r.confidence+')':'표본부족'],
+      ['지연',late?r.overdue+'일':'없음'],
+      ['예상 다음 발주',r.exp_next_po||'-']]));
+    svg.appendChild(b1);
+    // 면담 경과
+    if(r.meet_elapsed!=null){
+      const w2=(r.meet_elapsed/max)*iw;
+      const b2=el('rect',{x:mL,y:y+15,width:Math.max(w2,1),height:12,rx:3,fill:cv('--s4')});
+      bindTip(b2,tt(r.name,[['최근 면담',r.meet_last],['경과',r.meet_elapsed+'일'],['면담 기록',r.meet_count+'건']]));
+      svg.appendChild(b2);
+    }else{
+      svg.appendChild(el('text',{x:mL+3,y:y+25,class:'glab','font-size':10,fill:cv('--muted')},'면담 기록 없음'));
+    }
+    // 그 고객의 평균주기 표식
+    if(r.avg_gap){const tx=mL+(r.avg_gap/max)*iw;
+      svg.appendChild(el('line',{x1:tx,x2:tx,y1:y-3,y2:y+15,stroke:cv('--ink'),'stroke-width':2}));}
+    svg.appendChild(el('text',{x:mL-9,y:y+16,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
+    svg.appendChild(el('text',{x:W-mR+8,y:y+11,class:'dlab',fill:late?cv('--bad-ink'):cv('--secondary')},
+      r.po_elapsed+'일'+(late?' (지연 '+r.overdue+')':'')));
+    if(r.meet_elapsed!=null)
+      svg.appendChild(el('text',{x:W-mR+8,y:y+26,class:'dlab',fill:cv('--muted'),'font-size':10},'면담 '+r.meet_elapsed+'일'));
+  });
+  mount.appendChild(svg);
+  const lg=document.createElement('div');lg.className='legend';
+  lg.innerHTML=`<span><i style="background:var(--s1)"></i>발주 경과일</span>
+    <span><i style="background:var(--critical)"></i>발주 지연(주기 초과)</span>
+    <span><i style="background:var(--s4)"></i>면담 경과일</span>
+    <span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>그 고객의 평균 발주주기</span>`;
+  mount.appendChild(lg);
+}
+
+function renderOps(){
+  const M=document.getElementById('boardOps');M.innerHTML='';
+  const s=OPS.summary,w=OPS.meta.worklog;
+  M.insertAdjacentHTML('beforeend',`
+    <div class="board-intro" style="--accent:var(--s4)">
+      <span>🧭</span><span><b>누구에게 먼저 연락해야 하나</b> — 축: <span class="axis">발주일(PODate)</span>.
+      <b>평균 발주주기는 고객마다 다릅니다.</b> 각 고객의 자기 주기를 기준선으로 두고, 그 주기를 넘긴 만큼을 '지연'으로 봅니다.
+      면담 경과일은 WORK LOG '고객동향' 기록 기준입니다.</span></div>
+    <div class="filters" id="opsFilters"><span class="flab">필터</span></div>
+    <div class="grid g4" id="opsKpi">
+      <div class="card kpi"><div class="lab">관리 고객</div><div class="val num">${s.customers}<span class="u">개사</span></div><div class="sub">2026 목표 배정</div></div>
+      <div class="card kpi"><div class="lab">발주 지연</div><div class="val num" style="color:var(--bad-ink)">${s.overdue_count}<span class="u">개사</span></div><div class="sub">자기 평균주기 초과</div></div>
+      <div class="card kpi"><div class="lab">면담 기록 없음</div><div class="val num" style="color:var(--warn-ink)">${s.no_meet}<span class="u">개사</span></div><div class="sub">WORK LOG 고객동향 미기록</div></div>
+      <div class="card kpi"><div class="lab">진행 중 PO</div><div class="val num">${s.inflight_po}<span class="u">건</span></div><div class="sub">${eok(s.inflight_sales,2)} · ${s.inflight_customers}개사 · 주문~납품 사이</div></div>
+    </div>
+    <section><div class="sec-head"><span class="eyebrow">우선순위</span><h2>연락 우선순위</h2><span class="rule"></span></div><div id="opsMain"></div></section>
+    <section><div class="sec-head"><span class="eyebrow">일정</span><h2>진행 중 PO (주문 → 납품)</h2><span class="rule"></span>
+      <span class="sub">발주 완료 · 납품 전 ${s.inflight_po}건 · ${eok(s.inflight_sales,2)}</span></div><div id="opsDel"></div></section>
+    <section><div class="sec-head"><span class="eyebrow">전체</span><h2>고객 현황표</h2><span class="rule"></span></div><div id="opsAll"></div></section>
+    <div class="note" style="margin-top:12px">면담 데이터 출처: KNC WORK LOG ${w.fetchedAt?('· 수집 '+w.fetchedAt.slice(0,10)):''} ·
+      전체 ${w.total}건 중 고객 연결 ${w.linked}건, 그중 '고객동향' ${w.meet_linked}건.
+      기록이 적어 <b>${s.no_meet}개사는 면담 이력이 비어 있습니다</b>.</div>`);
+
+  const of=document.getElementById('opsFilters');
+  multiSelect(of,{label:'조건',allLabel:'조건 없음 (전체)',options:OPS_CONDS,
+    selected:opsConds,onChange:()=>drawOps()});
+  multiSelect(of,{label:'거래상태',allLabel:'전체',
+    options:OPS.facets.deal.map(v=>({value:v,label:v,
+      sub:String(OPS.customers.filter(c=>c.deal===v).length)})),
+    selected:opsDeal,onChange:()=>drawOps()});
+  multiSelect(of,{label:'산업군',allLabel:'전체',
+    options:OPS.facets.industry.map(v=>({value:v,label:v,
+      sub:String(OPS.customers.filter(c=>c.industry===v).length)})),
+    selected:opsInd,onChange:()=>drawOps()});
+  multiSelect(of,{label:'고객',allLabel:'전체 고객',
+    options:OPS.customers.map(c=>({value:c.bb,label:shortName(c.name),
+      sub:c.overdue>0?('지연 '+c.overdue+'일'):''})),
+    selected:opsCust,onChange:()=>drawOps()});
+  const rst=document.createElement('button');rst.className='reset';rst.textContent='초기화';
+  rst.addEventListener('click',()=>{opsConds.clear();opsCust.clear();opsDeal.clear();opsInd.clear();renderOps();});
+  of.appendChild(rst);
+  of.insertAdjacentHTML('beforeend',
+    '<span class="hint">조건은 복수 선택 시 <b>하나라도 해당</b>(OR) · 나머지 필터는 교집합(AND)</span>');
+  drawOps();
+}
+
+function drawOps(){
+  const rows=opsRows();
+  const main=document.getElementById('opsMain');main.innerHTML='';
+  // 거래중인 고객 전체를 2026 매출 큰 순으로 (필터에서 거래상태를 직접 고르면 그 선택을 따름)
+  const pr=(opsDeal.size?rows:rows.filter(c=>c.deal==='거래중인고객'))
+    .slice().sort((a,b)=>b.s2026-a.s2026);
+  vizCard(main,{title:'발주 경과 · 면담 경과 — 고객별 자기 주기 기준',
+    note:`검은 세로선이 그 고객의 평균 발주주기입니다. 막대가 선을 넘으면 평소보다 늦은 것 · 매출 많은 순 ${pr.length}개사`,
+    draw:m=>{if(!pr.length){m.innerHTML='<div class="note" style="padding:20px 0">해당 고객이 없습니다.</div>';return;}
+      opsBars(m,{rows:pr});},
+    tableHTML:table(['고객','2026 실적','최종 발주','발주경과','평균주기(신뢰도)','지연','면담경과'],
+      pr.map(c=>({cells:[esc(shortName(c.name)),eok(c.s2026,2),c.last_po,c.po_elapsed+'일',gapCell(c),
+        c.overdue?`<span class="pill bad">${c.overdue}일</span>`:'<span class="pill mut">-</span>',
+        meetCell(c)],overdue:c.overdue})),
+      r=>r.overdue>0)});
+
+  /* 진행 중 PO 전체 (주문 완료 ~ 납품 전) */
+  const del=document.getElementById('opsDel');del.innerHTML='';
+  const fl=OPS.inflight.filter(x=>
+    (!opsCust.size||opsCust.has(x.bb))&&
+    (!opsDeal.size||opsDeal.has(x.deal))&&
+    (!opsInd.size||opsInd.has(x.industry)));
+  const dated=fl.filter(x=>x.days_to!=null),undated=fl.filter(x=>x.days_to==null);
+  const sumS=fl.reduce((a,x)=>a+x.sales,0);
+  vizCard(del,{title:`진행 중 PO ${fl.length}건 · ${eok(sumS,2)}`,
+    note:`발주는 됐고 아직 납품 전인 PO 전체 (고객 ${new Set(fl.map(x=>x.bb)).size}개사)`
+      +(undated.length?` · 납품예정일 미정 ${undated.length}건`:''),
+    draw:m=>{
+      if(!fl.length){m.innerHTML='<div class="note" style="padding:20px 0">진행 중 PO가 없습니다.</div>';return;}
+      const show=dated.slice(0,18);
+      lollipop(m,{rows:show.map(x=>({name:x.po+' ('+shortName(x.name)+')',value:x.days_to,
+        rows:[['고객',x.name],['발주일',x.po_date+' ('+x.po_age+'일 경과)'],['ETD',x.etd||'-'],
+              ['납품예정',x.delivery],['금액',KRW(x.sales)],['공장',x.ff||'-']]})),
+        fmtV:v=>'D-'+v,threshold:7,thLabel:'7일 이내'});
+      if(dated.length>show.length||undated.length){
+        const n=document.createElement('div');n.className='note';n.style.marginTop='8px';
+        n.textContent=`그래프는 임박한 ${show.length}건만 표시 — 전체는 '표'로 전환해 확인하세요.`;
+        m.appendChild(n);}},
+    tableHTML:table(['PO','고객','발주일','발주경과','ETD','납품예정','D-day','금액','공장'],
+      fl.map(x=>({cells:[esc(x.po),esc(shortName(x.name)),x.po_date,x.po_age+'일',x.etd||'-',
+        x.delivery||'<span class="pill warn">미정</span>',
+        x.days_to!=null?('D-'+x.days_to):'-',KRW(x.sales),esc(x.ff||'-')],
+        soon:x.days_to!=null&&x.days_to<=7})),
+      r=>r.soon)});
+
+  const all=document.getElementById('opsAll');
+  all.innerHTML=`<div class="card"><div class="card-head"><div><h3>고객 현황 전체</h3>
+    <div class="note">Power BI '영업 현황' 표와 같은 열 구성 · 신뢰도는 평균주기의 신뢰도이므로 같은 칸에 표기</div></div></div>
+    ${table(['고객','거래상태','산업군','발주경과','평균주기(신뢰도)','지연','면담경과','다음 납품','2026 실적','달성율'],
+      rows.map(c=>({cells:[esc(shortName(c.name)),esc(c.deal),esc(c.industry),c.po_elapsed+'일',gapCell(c),
+        c.overdue?`<span class="pill bad">${c.overdue}일</span>`:'-',
+        meetCell(c),c.next_del||'-',eok(c.s2026,2),
+        `<span class="pill ${c.progress>=0.5?'ok':c.progress>=0.3?'warn':'bad'}">${pct(c.progress,0)}</span>`],
+        overdue:c.overdue})),
+      r=>r.overdue>0)}</div>`;
+}
+
+/* ── nav ── */
+const BOARDS={pay:{el:'boardPay',render:renderPay},ops:{el:'boardOps',render:renderOps}};
+let active='pay';
+function show(b){
+  active=b;
+  document.querySelectorAll('#boardNav button').forEach(x=>x.setAttribute('aria-selected',String(x.dataset.board===b)));
+  Object.entries(BOARDS).forEach(([k,v])=>document.getElementById(v.el).classList.toggle('hidden',k!==b));
+  BOARDS[b].render();
+  window.scrollTo({top:0,behavior:'instant'});
+}
+document.querySelectorAll('#boardNav button').forEach(btn=>btn.addEventListener('click',()=>show(btn.dataset.board)));
+
+document.getElementById('asOf').textContent='데이터 기준 '+PAY.meta.as_of;
+document.getElementById('foot').innerHTML=`
+  <div><b>보드별 축이 다릅니다</b> — 입금 현황: 입금일(PaymentDate) · 영업 현황: 발주일(PODate).
+  같은 데이터라도 "언제로 계산하느냐"가 달라 금액이 다릅니다.</div>
+  <div style="margin-top:8px"><b>예상 매출이익</b> = 매출 × (원가 등록분의 마진율). 원가 미등록 PO를 같은 마진으로 가정한 추정치이며, 확정 이익과 원가등록율을 함께 표기합니다.</div>
+  <div style="margin-top:8px"><b>평균 발주주기</b>는 고객마다 다릅니다. 최근 2년 발주 간격의 평균이며, 표본 수와 편차로 신뢰도(높음/보통/낮음)를 판정합니다.</div>
+  <div style="margin-top:8px">출처: KNC 분기영업 파이프라인 + KNC WORK LOG · 데이터 품질: 입금일 이상 ${PAY.meta.quality.payment_date_invalid}건 · 미입력 ${PAY.meta.quality.payment_date_missing}건 / 전체 ${PAY.meta.quality.total_po}건 ·
+  기록 통계(분기 리포트 등)는 별도 파일로 관리합니다.</div>`;
+
+const rf=document.getElementById('refreshBtn');
+rf.addEventListener('click',()=>{ rf.disabled=true; rf.textContent='불러오는 중…'; location.reload(); });
+
+const tb=document.getElementById('themeBtn');
+tb.addEventListener('click',()=>{const c=document.documentElement.getAttribute('data-theme');
+  const dark=c?c==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme',dark?'light':'dark');
+  BOARDS[active].render();});
+
+show('pay');
+
+}  /* end start() */
+boot();
+</script>
