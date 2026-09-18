@@ -985,12 +985,13 @@ function renderPay(){
     <div class="card kpi accent"><div class="lab">입금 완료 <span style="color:var(--muted)">· ${esc(scope)}</span></div>
       <div class="val num">${s.v}<span class="u">${s.u}</span></div>
       <div class="sub">${KRW(A.col_sales)} · ${A.col_po}건</div>
+      ${(A.sales-A.col_sales)>0?`<div class="sub" style="margin-top:3px">수금 예정 ${eok(A.sales-A.col_sales,2)}(${A.po-A.col_po}건) 별도 → 합계 <b>${eok(A.sales,2)}</b> <span style="color:var(--muted)">= Power BI 매출입금액</span></div>`:''}
       ${Y?dHTML(Y.sales,Y.label):''}</div>
-    <div class="card kpi"><div class="lab">예상 매출이익</div>
+    <div class="card kpi"><div class="lab">예상 매출이익 <span style="color:var(--muted)">· 수금완료분</span></div>
       <div class="val num">${e.v}<span class="u">${e.u}</span></div>
       <div class="sub">확정 ${eok(A.confirmed,1)} · 원가등록 ${pct(A.coverage,0)} 반영 추정</div>
       ${Y?dHTML(Y.est,Y.label):''}</div>
-    <div class="card kpi"><div class="lab">예상 매출이익률</div>
+    <div class="card kpi"><div class="lab">예상 매출이익률 <span style="color:var(--muted)">· 수금완료분</span></div>
       <div class="val num">${A.margin!=null?(A.margin*100).toFixed(1):'-'}<span class="u">%</span></div>
       <div class="sub">물류·부대비 ${eok(A.col_cost-A.col_cogs,2)}(매출의 ${pct((A.col_cost-A.col_cogs)/A.col_sales,1)}) 차감 후
         <span style="color:var(--muted)">· 미차감 시 ${pct(A.gmargin,1)}</span></div>
@@ -1041,8 +1042,8 @@ function renderPay(){
         {cells:['신규 수주 필요',KRW(gap),'-',pct(gap/target),'-']}])});
     /* 매입 3단 + 예상 매출이익 */
     const PU=PAY.purchase;
-    vizCard(rcRow,{title:'매입 · 예상 매출이익',
-      note:`매입을 지급완료·미지급·미등록(비례추정)으로 나눠 계산한 이익 — 대상 PO ${PU.po}건`,
+    vizCard(rcRow,{title:'매입 · 예상 매출이익 — 확보 매출 기준',
+      note:`범위 = 수금완료 + 출하·납품완료 + 생산중 (확보 매출 ${eok(PU.sales,1)}, PO ${PU.po}건). 위 KPI의 예상 매출이익은 <b>수금완료분만</b>이라 여기 값과 다릅니다. 매입은 지급완료·미지급·미등록(비례추정)으로 분해.`,
       draw:m=>{
         goalBar(m,{target:PU.sales,segments:[
           {name:'지급 완료',value:PU.paid.krw,count:PU.paid.po,color:cv('--s2')},
