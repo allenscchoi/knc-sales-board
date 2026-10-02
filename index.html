@@ -256,6 +256,7 @@ let D = { pay: null, ops: null };
    KNC 영업 전광판 — Graph API 데이터 공급부
    뷰어 본인 계정으로 SharePoint 리스트를 직접 읽어 집계한다.
    결과는 build_*.py 가 만들던 번들과 **같은 모양**이라 화면 코드는 그대로 쓴다.
+   2026-10: 앱 Shipment v1 대응 — 품목(POItem) 단위 입금·진행 판정, 시험·철회 PO 제외
    ============================================================ */
 
 const CFG = {
@@ -264,6 +265,7 @@ const CFG = {
   siteId: 'kncmarinekr.sharepoint.com,ea02f875-c730-4ec4-a6e4-b55a13672689,716f7444-0f22-46b9-bdca-fa1f535b3e47',
   lists: {
     po:     '9c9bc26a-d398-4bfb-9f66-0e99c3ffbd3e',
+    poitem: 'a475dd11-7cfa-42e1-ab70-5510e40cc01a',
     cogs:   '63e212e1-c6e8-430a-9a90-1a63fd3d999c',
     buyer:  '1fbfa37b-3c3b-4575-a44a-c7b418dfeb4a',
     seller: '62567a70-e5f2-4363-b8ff-b71eb7168f4a',
@@ -280,6 +282,10 @@ const F = {
   industry: 'Industry_Category',
   target: '_xc601__xc5c5__xbaa9__xd45c__x00',    // 영업목표 (SalesTarget, currency)
 };
+
+/* POItem은 필요한 칸만 받는다 (전체 칸을 받으면 수 MB) */
+const ITEM_FIELDS = ['PO_NoLookupId', 'Sales', 'PaymentDate', 'Status', 'OperationalState',
+                     'DeliveryDate', 'ShipmentDate', 'PlannedETD'];
 
 /* ── 인증 ── (msal-browser UMD 전역은 `msal`) */
 let msalApp, account;
@@ -323,10 +329,11 @@ async function token() {
   }
 }
 
-/* ── Graph 조회 (페이징) ── */
-async function fetchList(listId, onProgress) {
+/* ── Graph 조회 (페이징) ── select: 받을 필드 목록(없으면 전체) */
+async function fetchList(listId, onProgress, select) {
   const t = await token();
-  let url = `https://graph.microsoft.com/v1.0/sites/${CFG.siteId}/lists/${listId}/items?expand=fields&$top=999`;
+  const fx = select ? `fields($select=${select.join(',')})` : 'fields';
+  let url = `https://graph.microsoft.com/v1.0/sites/${CFG.siteId}/lists/${listId}/items?expand=${fx}&$top=999`;
   const out = [];
   while (url) {
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
@@ -346,6 +353,8 @@ const N_ = v => (typeof v === 'number' ? v : parseFloat(v) || 0);
 const ymd = d => d.toISOString().slice(0, 10);
 const ym_ = d => d.toISOString().slice(0, 7);
 const doy = d => Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 864e5);
+const validD = d => (d && d.getUTCFullYear() >= 2000 ? d : null);   // 1970-01-01 같은 오류값은 날짜 없음으로
+const DAY = 864e5;
 
 /* PO 번호에서 제품(PP)·고객(BB) 코드 분리: 예 VH-2734-BY */
 function parsePono(no) {
@@ -354,18 +363,72 @@ function parsePono(no) {
 }
 
 const PRE_COST = new Set(['Pending', 'PO Confirmed', 'Ship Scheduled']);
-const POST_COST = new Set(['Shipped', 'Partial Shipped', 'Delivered', 'COGS Confirmed']);
+const POST_COST = new Set(['Shipped', 'Partial Shipped', 'Delivered', 'COGS Confirmed', 'Buyer Paid']);
+const ITEM_DONE = new Set(['Delivered', 'Buyer Paid']);   // 품목이 이미 고객에게 도착한 상태
 
-/* ── 집계: build_payment_bundle.py 와 동일한 산출물 ── */
-function buildPay(poRows, buyers, asof) {
+/* ── 집계 제외 ──
+   · 시험·재고이동 PO: 앱 v1 시험 PO(R55 시리즈), 일련번호에 test/stock — 분기 보고 config/exclude_po.json 과 같은 대상
+   · DataPurpose = Test / Training
+   · 철회: OperationalState = Withdrawn. 철회해도 Status는 그대로 남는다.
+     WithdrawnAt은 복원(Reinstate) 뒤에도 남으므로 판정에 쓰지 않는다. */
+const TEST_PONO = /^[A-Z0-9]+-(R\d+[A-Z]?|[^-]*(test|stock)[^-]*)-[A-Z0-9]+$/i;
+const withdrawn = f => f.OperationalState === 'Withdrawn';
+function excludeReason(f) {
+  if (withdrawn(f)) return 'withdrawn';
+  if (f.DataPurpose === 'Test' || f.DataPurpose === 'Training') return 'test';
+  if (TEST_PONO.test((f.Title || '').trim())) return 'test';
+  return null;
+}
+
+/* PO 리스트 id → 철회 안 된 품목들 */
+function groupItems(items) {
+  const m = new Map();
+  for (const it of items || []) {
+    if (withdrawn(it)) continue;
+    const k = String(it.PO_NoLookupId || '');
+    if (!k) continue;
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(it);
+  }
+  return m;
+}
+
+/* 품목 매출 비중 — PO 합계(매출·원가)를 품목에 나눌 때 쓴다.
+   PO 합계는 그대로 두고(= Power BI 연간 합계와 같은 원천) 날짜만 품목 기준으로 가른다. */
+function itemWeights(its) {
+  const tot = its.reduce((a, it) => a + N_(it.Sales), 0);
+  return tot > 0 ? its.map(it => N_(it.Sales) / tot) : null;
+}
+
+/* 입금 분할 — 앱 v1은 분할·부분 선적 품목마다 결제일을 따로 두고
+   PO 결제일에는 그중 가장 늦은 날짜만 남긴다. 그래서 품목 결제일로 쪼갠다.
+   · 품목이 없거나 품목 매출 합계가 0 → PO 결제일 하나로 (예전 방식)
+   · 어느 품목에도 결제일이 없음 → 모든 품목에 PO 결제일 (옛 데이터)
+   · 일부 품목만 결제일 있음 → 없는 품목은 '결제일 미정' (아직 선적 전인 잔량) */
+function payParts(f, its) {
+  const pd = validD(D_(f.Payment_Date));
+  const w = its.length ? itemWeights(its) : null;
+  if (!w) return [{ date: pd, w: 1, st: f.Status || null }];
+  const anyItemDate = its.some(it => validD(D_(it.PaymentDate)));
+  return its.map((it, i) => ({
+    date: anyItemDate ? validD(D_(it.PaymentDate)) : pd,
+    w: w[i],
+    st: it.Status || f.Status || null,
+  }));
+}
+
+/* ── 집계: 입금 현황 ── */
+function buildPay(poRows, items, buyers, asof) {
   const CUR_Y = String(asof.getUTCFullYear());
   const cutoff = doy(asof);
   const FROM_Y = 2021;
+  const itemsBy = groupItems(items);
   const cells = new Map(), sched = new Map();
   const key = (bb, ym) => bb + '|' + ym;
 
   const statusAgg = new Map();
-  const gaps = [], anomalies = [];
+  const gaps = [], anomalies = [], mismatches = [];
+  const excluded = { test: { po: 0, sales: 0 }, withdrawn: { po: 0, sales: 0 } };
   const pipeline = {
     collected: { po: 0, sales: 0 },
     '생산 중': { po: 0, sales: 0, cogs_po: 0 },
@@ -373,11 +436,19 @@ function buildPay(poRows, buyers, asof) {
     '상태미상': { po: 0, sales: 0, cogs_po: 0 },
     no_paydate: { po: 0, sales: 0 },
   };
-  let regSales = 0, regCost = 0, unregSales = 0, unregPo = 0, paidKrw = 0, unpaidKrw = 0, paidPo = 0, unpaidPo = 0;
+  // 건수는 PO 중복 없이 센다 (한 PO가 여러 회차로 나뉘어도 같은 칸에선 1건)
+  const pset = {}, pcov = {};
+  for (const k in pipeline) { pset[k] = new Set(); pcov[k] = new Set(); }
+  const regSet = new Set(), unregSet = new Set();
+  let regSales = 0, regCost = 0, unregSales = 0, paidKrw = 0, unpaidKrw = 0, paidPo = 0;
+  let included = 0, splitPo = 0;
 
   for (const f of poRows) {
     const pono = (f.Title || '').trim();
     if (!pono) continue;
+    const why = excludeReason(f);
+    if (why) { excluded[why].po++; excluded[why].sales += N_(f.Sales_KRW_Total); continue; }
+    included++;
     const { bb } = parsePono(pono);
     const sales = N_(f.Sales_KRW_Total);
     const cogs = N_(f.COGSTotal);
@@ -385,8 +456,9 @@ function buildPay(poRows, buyers, asof) {
     const covered = cogs > 0;
     const st = f.Status || null;
     const pd = D_(f.Payment_Date), pod = D_(f.field_4);
+    const its = itemsBy.get(String(f.id)) || [];
 
-    // 상태별 집계 + 원가 누락 판정
+    // 상태별 집계 + 원가 누락 판정 (PO 단위)
     const sk = st || '(미지정)';
     if (!statusAgg.has(sk)) statusAgg.set(sk, { status: sk, po: 0, cogs_po: 0, sales: 0, missing_sales: 0, pre_cost: PRE_COST.has(sk) });
     const sa = statusAgg.get(sk);
@@ -397,62 +469,87 @@ function buildPay(poRows, buyers, asof) {
       if (POST_COST.has(st)) gaps.push({ po: pono, bb, status: st, sales,
         etd: f.field_5 ? String(f.field_5).slice(0, 10) : '', delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
     }
-    // 입금일 이상값
-    if (f.Payment_Date && (!pd || pd.getUTCFullYear() < 2000)) {
+    // 입금일 이상값 (PO 헤더)
+    if (f.Payment_Date && !validD(pd)) {
       anomalies.push({ po: pono, bb, value: String(f.Payment_Date).slice(0, 19), sales,
         status: st || '(미지정)', podate: pod ? ymd(pod) : '', etd: f.field_5 ? String(f.field_5).slice(0, 10) : '',
         delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
     }
-
-    // 셀 집계
-    if (pd && pd.getUTCFullYear() >= FROM_Y) {
-      const k = key(bb || '미상', ym_(pd));
-      if (!cells.has(k)) cells.set(k, { bb: bb || '미상', ym: ym_(pd),
-        sales: 0, cost: 0, cogs: 0, csales: 0, po: 0,
-        col_sales: 0, col_cost: 0, col_cogs: 0, col_csales: 0, col_po: 0,
-        ytd_sales: 0, ytd_cost: 0, ytd_cogs: 0, ytd_csales: 0, ytd_po: 0 });
-      const c = cells.get(k);
-      c.sales += sales; c.po++;
-      if (covered) { c.cost += cost; c.cogs += cogs; c.csales += sales; }
-      if (pd <= asof) {
-        c.col_sales += sales; c.col_po++;
-        if (covered) { c.col_cost += cost; c.col_cogs += cogs; c.col_csales += sales; }
-      } else {
-        const sk2 = key(bb || '미상', ym_(pd));
-        if (!sched.has(sk2)) sched.set(sk2, { bb: bb || '미상', ym: ym_(pd), sales: 0, po: 0 });
-        const s2 = sched.get(sk2); s2.sales += sales; s2.po++;
-      }
-      if (doy(pd) <= cutoff) {
-        c.ytd_sales += sales; c.ytd_po++;
-        if (covered) { c.ytd_cost += cost; c.ytd_cogs += cogs; c.ytd_csales += sales; }
-      }
+    // 확인 필요: PO 결제일이 어느 품목 결제일과도 한 달 넘게 다름 (집계는 품목 기준)
+    const pdv = validD(pd);
+    const idates = its.map(it => validD(D_(it.PaymentDate))).filter(Boolean);
+    if (pdv && idates.length && !idates.some(x => +x === +pdv)) {
+      const g = Math.min(...idates.map(x => Math.abs(x - pdv) / DAY));
+      if (g > 31) mismatches.push({ po: pono, bb, status: st || '(미지정)', sales, gap: Math.round(g),
+        po_date: ymd(pdv), item_dates: [...new Set(idates.map(ymd))].sort().join(', ') });
     }
 
-    // 파이프라인 (수금완료 / 미수금 진행분)
-    if (pod) {
-      if (pd && pd.getUTCFullYear() >= 2000 && pd <= asof) {
-        if (String(pd.getUTCFullYear()) === CUR_Y) { pipeline.collected.po++; pipeline.collected.sales += sales; }
-      } else {
-        const grp = PRE_COST.has(st) ? '생산 중' : (POST_COST.has(st) ? '출하·납품 완료' : '상태미상');
-        if (grp !== '상태미상' || st) {
-          pipeline[grp].po++; pipeline[grp].sales += sales;
-          if (covered) pipeline[grp].cogs_po++;
-          if (!pd || pd.getUTCFullYear() < 2000) { pipeline.no_paydate.po++; pipeline.no_paydate.sales += sales; }
+    const parts = payParts(f, its);
+    if (new Set(parts.map(p => p.date ? +p.date : 0)).size > 1) splitPo++;
+    for (const p of parts) {
+      const s = sales * p.w, co = cost * p.w, cg = cogs * p.w, d = p.date;
+
+      // 셀 집계 (고객 × 입금월)
+      if (d && d.getUTCFullYear() >= FROM_Y) {
+        const k = key(bb || '미상', ym_(d));
+        if (!cells.has(k)) cells.set(k, { bb: bb || '미상', ym: ym_(d),
+          sales: 0, cost: 0, cogs: 0, csales: 0, po: 0,
+          col_sales: 0, col_cost: 0, col_cogs: 0, col_csales: 0, col_po: 0,
+          ytd_sales: 0, ytd_cost: 0, ytd_cogs: 0, ytd_csales: 0, ytd_po: 0,
+          _po: new Set(), _col: new Set(), _ytd: new Set() });
+        const c = cells.get(k);
+        c.sales += s; c._po.add(pono);
+        if (covered) { c.cost += co; c.cogs += cg; c.csales += s; }
+        if (d <= asof) {
+          c.col_sales += s; c._col.add(pono);
+          if (covered) { c.col_cost += co; c.col_cogs += cg; c.col_csales += s; }
+        } else {
+          if (!sched.has(k)) sched.set(k, { bb: bb || '미상', ym: ym_(d), sales: 0, po: 0, _po: new Set() });
+          const s2 = sched.get(k); s2.sales += s; s2._po.add(pono);
+        }
+        if (doy(d) <= cutoff) {
+          c.ytd_sales += s; c._ytd.add(pono);
+          if (covered) { c.ytd_cost += co; c.ytd_cogs += cg; c.ytd_csales += s; }
         }
       }
-      // 매입 3단 (파이프라인 대상 PO)
-      const inPipe = (pd && pd.getUTCFullYear() >= 2000 && pd <= asof)
-        ? String(pd.getUTCFullYear()) === CUR_Y
-        : (PRE_COST.has(st) || POST_COST.has(st));
-      if (inPipe) {
-        if (covered) { regSales += sales; regCost += cost; unpaidKrw += cost; unpaidPo++; }
-        else { unregSales += sales; unregPo++; }
+
+      // 파이프라인 (수금완료 / 미수금 진행분) — 진행 단계는 품목 상태로
+      if (pod) {
+        if (d && d <= asof) {
+          if (String(d.getUTCFullYear()) === CUR_Y) { pipeline.collected.sales += s; pset.collected.add(pono); }
+        } else {
+          const grp = PRE_COST.has(p.st) ? '생산 중' : (POST_COST.has(p.st) ? '출하·납품 완료' : '상태미상');
+          if (grp !== '상태미상' || p.st) {
+            pipeline[grp].sales += s; pset[grp].add(pono);
+            if (covered) pcov[grp].add(pono);
+            if (!d) { pipeline.no_paydate.sales += s; pset.no_paydate.add(pono); }
+          }
+        }
+        // 매입 3단 (파이프라인 대상분)
+        const inPipe = (d && d <= asof)
+          ? String(d.getUTCFullYear()) === CUR_Y
+          : (PRE_COST.has(p.st) || POST_COST.has(p.st));
+        if (inPipe) {
+          if (covered) { regSales += s; regCost += co; unpaidKrw += co; regSet.add(pono); }
+          else { unregSales += s; unregSet.add(pono); }
+        }
       }
     }
   }
 
-  const cellRows = [...cells.values()];
-  const schedRows = [...sched.values()];
+  for (const k in pipeline) {
+    pipeline[k].po = pset[k].size;
+    if ('cogs_po' in pipeline[k]) pipeline[k].cogs_po = pcov[k].size;
+  }
+  const union = (...ks) => new Set(ks.flatMap(k => [...pset[k]])).size;
+  pipeline.secured_po = union('collected', '생산 중', '출하·납품 완료');   // 한 PO가 두 단계에 걸치면 1건
+  pipeline.open_po = union('생산 중', '출하·납품 완료');
+
+  const cellRows = [...cells.values()].map(c => {
+    c.po = c._po.size; c.col_po = c._col.size; c.ytd_po = c._ytd.size;
+    delete c._po; delete c._col; delete c._ytd; return c;
+  });
+  const schedRows = [...sched.values()].map(s => { s.po = s._po.size; delete s._po; return s; });
   const costRate = regSales ? regCost / regSales : 0;
   const estKrw = unregSales * costRate;
   const pipeSales = regSales + unregSales;
@@ -471,11 +568,14 @@ function buildPay(poRows, buyers, asof) {
 
   return {
     meta: {
-      board: '입금 현황', axis: '입금일(PaymentDate)', as_of: ymd(asof),
+      board: '입금 현황', axis: '입금일(품목 결제일)', as_of: ymd(asof),
       cutoff_doy: cutoff, current_year: CUR_Y, from_year: FROM_Y,
       generated: new Date().toISOString(),
+      item_basis: itemsBy.size > 0,       // 품목을 못 읽으면 PO 결제일 하나로 집계된다
+      split_po: splitPo,                  // 결제일이 2개 이상으로 나뉜 PO
+      excluded,
       quality: {
-        payment_date_invalid: anomalies.length, payment_date_missing: 0, total_po: poRows.length,
+        payment_date_invalid: anomalies.length, payment_date_missing: 0, total_po: included,
         anomalies, anomaly_count: anomalies.length,
         anomaly_sales: anomalies.reduce((a, x) => a + x.sales, 0),
         status: [...statusAgg.values()].sort((a, b) => b.po - a.po),
@@ -484,15 +584,18 @@ function buildPay(poRows, buyers, asof) {
           sales: [...statusAgg.values()].filter(s => s.pre_cost).reduce((a, s) => a + s.missing_sales, 0),
         },
         gaps, gap_count: gaps.length, gap_sales: gaps.reduce((a, g) => a + g.sales, 0),
+        mismatches: mismatches.sort((a, b) => b.gap - a.gap),
+        mismatch_count: mismatches.length,
+        mismatch_sales: mismatches.reduce((a, x) => a + x.sales, 0),
       },
     },
     annual_target: annualTarget,
     pipeline,
     purchase: {
-      sales: pipeSales, po: unpaidPo + unregPo,
+      sales: pipeSales, po: regSet.size + unregSet.size,
       paid: { krw: paidKrw, po: paidPo },
-      unpaid: { krw: unpaidKrw, po: unpaidPo },
-      unregistered: { krw: estKrw, po: unregPo, sales: unregSales, rate: costRate },
+      unpaid: { krw: unpaidKrw, po: regSet.size },
+      unregistered: { krw: estKrw, po: unregSet.size, sales: unregSales, rate: costRate },
       total_cost: totalCost,
       profit: pipeSales - totalCost,
       margin: pipeSales ? (pipeSales - totalCost) / pipeSales : null,
@@ -512,6 +615,10 @@ async function loadLive(onProgress) {
   if (!account) return null;
   onProgress && onProgress('PO 리스트 읽는 중…');
   const po = await fetchList(CFG.lists.po, n => onProgress && onProgress(`PO ${n}건…`));
+  onProgress && onProgress('품목 읽는 중…');
+  let items = [];
+  try { items = await fetchList(CFG.lists.poitem, n => onProgress && onProgress(`품목 ${n}건…`), ITEM_FIELDS); }
+  catch (e) { console.warn('POItem 조회 실패 — PO 결제일 기준으로 집계합니다:', e.message); }
   onProgress && onProgress('고객 정보 읽는 중…');
   const buyers = await fetchList(CFG.lists.buyer);
   onProgress && onProgress('업무일지 읽는 중…');
@@ -520,12 +627,12 @@ async function loadLive(onProgress) {
   catch (e) { console.warn('WORK LOG 조회 실패 — 면담 경과일은 비웁니다:', e.message); }
   const asof = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
   onProgress && onProgress('집계 중…');
-  return { pay: buildPay(po, buyers, asof),
-           ops: buildOps(po, buyers, worklog, asof),
+  return { pay: buildPay(po, items, buyers, asof),
+           ops: buildOps(po, items, buyers, worklog, asof),
            _who: account.username };
 }
 
-/* ── 집계: build_ops_bundle.py 와 동일한 산출물 (영업 현황) ── */
+/* ── 집계: 영업 현황 ── */
 
 /* WORK LOG 필드 (columns_map 기준) */
 const WL = {
@@ -534,11 +641,46 @@ const WL = {
   buyer: 'BuyerLookupId',
 };
 
-function buildOps(poRows, buyers, worklog, asof) {
+/* PO 하나의 납품 진행 — 품목 단위로 판정한다
+   · 품목 납품일이 지났거나 품목 상태가 Delivered/Buyer Paid → 납품 끝
+   · 남은 품목의 납품예정 = 품목 납품일(선적 구성 후 생김) 중 가장 이른 날.
+     선적 일정이 하나도 없으면 고객 요청납기(BuyerRequestDeliveryDate) — 앱 v1은 선적 구성(T2) 전엔 납품일을 쓰지 않는다
+   · ETD = 남은 품목의 선적일(T2) 또는 항차 계획 ETD(T1). PO 헤더 ETD(field_5)는 v0 시절 값이 남아 있어 쓰지 않는다
+   · 품목이 없으면 PO 헤더 값으로 (예전 방식) */
+function poSchedule(f, its, asof) {
+  const req = validD(D_(f.BuyerRequestDeliveryDate));
+  const sales = N_(f.Sales_KRW_Total);
+  if (!its.length) {
+    const dl = validD(D_(f.DeliveryDate));
+    const open = !(dl && dl <= asof);
+    return { open, sales_open: open ? sales : 0, partial: false,
+             next: open ? (dl ? { d: dl, src: 'ship' } : (req ? { d: req, src: 'req' } : null)) : null,
+             last_del: dl && dl <= asof ? dl : null, etd: validD(D_(f.field_5)) };
+  }
+  const w = itemWeights(its);
+  let openW = 0, nOpen = 0, ship = null, unscheduled = false, last = null, etd = null;
+  its.forEach((it, i) => {
+    const dl = validD(D_(it.DeliveryDate));
+    const done = ITEM_DONE.has(it.Status) || (dl && dl <= asof);
+    if (dl && dl <= asof && (!last || dl > last)) last = dl;
+    if (done) return;
+    nOpen++;
+    openW += w ? w[i] : 1 / its.length;
+    if (dl) { if (!ship || dl < ship) ship = dl; } else unscheduled = true;
+    const e = validD(D_(it.ShipmentDate)) || validD(D_(it.PlannedETD));
+    if (e && (!etd || e < etd)) etd = e;
+  });
+  const next = ship ? { d: ship, src: 'ship' } : (unscheduled && req ? { d: req, src: 'req' } : null);
+  return { open: nOpen > 0, sales_open: sales * openW, partial: nOpen > 0 && nOpen < its.length,
+           next, last_del: last, etd };
+}
+
+function buildOps(poRows, items, buyers, worklog, asof) {
   const bmap = new Map();
   for (const b of buyers) if (b.Title) bmap.set(b.Title, b);
   const byId = new Map();                       // Buyer 리스트 id → BB 코드
   for (const b of buyers) if (b.id) byId.set(String(b.id), b.Title);
+  const itemsBy = groupItems(items);
 
   /* 면담(고객동향) / 전체 접촉 최근일 */
   const meetLast = new Map(), touchLast = new Map(), meetCnt = new Map();
@@ -557,24 +699,32 @@ function buildOps(poRows, buyers, worklog, asof) {
     }
   }
 
-  /* 고객별 PO 묶기 */
+  /* 고객별 PO 묶기 (시험·철회 PO 제외) + PO별 납품 진행 */
   const byBB = new Map();
+  const sch = new Map();
   for (const f of poRows) {
+    if (excludeReason(f)) continue;
     const { bb } = parsePono((f.Title || '').trim());
     if (!bb) continue;
     if (!byBB.has(bb)) byBB.set(bb, []);
     byBB.get(bb).push(f);
+    sch.set(f, poSchedule(f, itemsBy.get(String(f.id)) || [], asof));
   }
 
-  const DAY = 864e5;
   const rows = [];
   for (const [bb, prs] of byBB) {
     const pods = prs.map(f => D_(f.field_4)).filter(Boolean).sort((a, b) => a - b);
     if (!pods.length) continue;
     const lastPo = pods[pods.length - 1];
-    const dels = prs.map(f => D_(f.DeliveryDate)).filter(Boolean).sort((a, b) => a - b);
-    const pastDel = dels.filter(d => d <= asof);
-    const nextDel = dels.find(d => d > asof) || null;
+    const pastDel = prs.map(f => sch.get(f).last_del).filter(Boolean).sort((a, b) => a - b);
+    // 다음 납품 = 진행 중 PO의 납품예정 중 오늘 이후 가장 이른 날. 요청납기가 이미 지난 건은 따로 센다
+    let nextDel = null, late = 0;
+    for (const f of prs) {
+      const s = sch.get(f), pod = D_(f.field_4);
+      if (!s.open || !s.next || !pod || pod > asof) continue;
+      if (s.next.d < asof) { late++; continue; }
+      if (!nextDel || s.next.d < nextDel.d) nextDel = s.next;
+    }
 
     /* 발주 간격 — 고객마다 다르다 (최근 2년) */
     const recent = pods.filter(d => (asof - d) / DAY <= 730);
@@ -613,8 +763,10 @@ function buildOps(poRows, buyers, worklog, asof) {
       deal: b[F.deal] || '미지정', industry: b[F.industry] || '미분류', status: b[F.deal] || null,
       po_elapsed: elapsed, last_po: ymd(lastPo),
       del_elapsed: pastDel.length ? Math.round((asof - pastDel[pastDel.length - 1]) / DAY) : null,
-      next_del: nextDel ? ymd(nextDel) : null,
-      next_del_in: nextDel ? Math.round((nextDel - asof) / DAY) : null,
+      next_del: nextDel ? ymd(nextDel.d) : null,
+      next_del_src: nextDel ? nextDel.src : null,
+      next_del_in: nextDel ? Math.round((nextDel.d - asof) / DAY) : null,
+      late_del: late,
       avg_gap: avg ? Math.round(avg) : null,
       gap_sd: sd != null ? Math.round(sd) : null,
       confidence: conf, gap_n: gaps.length, ratio,
@@ -635,22 +787,23 @@ function buildOps(poRows, buyers, worklog, asof) {
   rows.sort((a, b) => (b.target - a.target) || (b.s2026 - a.s2026));
   const active = rows.filter(r => r.target > 0);
 
-  /* 진행 중 PO (발주 완료 ~ 납품 전) */
+  /* 진행 중 PO (발주 완료 ~ 납품 전) — 부분 선적은 남은 품목만 */
   const inflight = [];
-  for (const f of poRows) {
-    const pod = D_(f.field_4), dl = D_(f.DeliveryDate);
-    if (!pod || pod > asof) continue;
-    if (dl && dl <= asof) continue;
+  for (const [f, s] of sch) {
+    const pod = D_(f.field_4);
+    if (!pod || pod > asof || !s.open) continue;
     const { bb } = parsePono((f.Title || '').trim());
     const b = bmap.get(bb) || {};
     inflight.push({
       po: f.Title, bb, name: b[F.name] || bb,
       deal: b[F.deal] || '미지정', industry: b[F.industry] || '미분류',
       po_date: ymd(pod), po_age: Math.round((asof - pod) / DAY),
-      etd: D_(f.field_5) ? ymd(D_(f.field_5)) : null,
-      delivery: dl ? ymd(dl) : null,
-      days_to: dl ? Math.round((dl - asof) / DAY) : null,
-      sales: N_(f.Sales_KRW_Total),
+      etd: s.etd ? ymd(s.etd) : null,
+      delivery: s.next ? ymd(s.next.d) : null,
+      del_src: s.next ? s.next.src : null,          // ship = 선적 일정 · req = 고객 요청납기
+      days_to: s.next ? Math.round((s.next.d - asof) / DAY) : null,
+      sales: s.sales_open,
+      partial: s.partial,                           // 부분 선적 — 금액은 남은 품목분
       ff: null,
     });
   }
@@ -676,6 +829,8 @@ function buildOps(poRows, buyers, worklog, asof) {
       inflight_sales: inflight.reduce((a, x) => a + x.sales, 0),
       inflight_customers: new Set(inflight.map(x => x.bb)).size,
       inflight_nodate: inflight.filter(x => x.days_to == null).length,
+      inflight_req: inflight.filter(x => x.del_src === 'req').length,
+      inflight_late: inflight.filter(x => x.days_to != null && x.days_to < 0).length,
     },
     customers: active,
     inflight,
@@ -788,15 +943,16 @@ function bullets(mount,{rows,maxOverride}){
 }
 
 /* ── chart: lollipop (elapsed days) ── */
-function lollipop(mount,{rows,fmtV,threshold,thLabel}){
+function lollipop(mount,{rows,fmtV,threshold,thLabel,hotBelow}){
+  // hotBelow: 값이 작을수록 급함(D-day). 음수(기한 경과)는 0 위치에 붙여 그린다
   const rh=24,gap=6,mT=16,mL=112,mR=52,W=660,H=mT+rows.length*(rh+gap);
   const max=Math.max(...rows.map(r=>r.value),threshold||0,1),iw=W-mL-mR;
   const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
   if(threshold){const tx=mL+(threshold/max)*iw;
     svg.appendChild(el('line',{x1:tx,x2:tx,y1:mT-8,y2:H-4,stroke:cv('--critical'),'stroke-width':1,'stroke-dasharray':'3 3','stroke-opacity':.6}));
     svg.appendChild(el('text',{x:tx+4,y:mT-10,class:'glab',fill:cv('--bad-ink'),'font-size':10},thLabel||''));}
-  rows.forEach((r,i)=>{const y=mT+i*(rh+gap)+rh/2,x=mL+(r.value/max)*iw;
-    const hot=threshold&&r.value>threshold;
+  rows.forEach((r,i)=>{const y=mT+i*(rh+gap)+rh/2,x=mL+(Math.max(r.value,0)/max)*iw;
+    const hot=threshold&&(hotBelow?r.value<=threshold:r.value>threshold);
     svg.appendChild(el('line',{x1:mL,x2:x,y1:y,y2:y,stroke:hot?cv('--critical'):cv('--s1'),'stroke-width':2,'stroke-opacity':hot?.5:.32}));
     const dot=el('circle',{cx:x,cy:y,r:5,fill:hot?cv('--critical'):cv('--s1'),stroke:cv('--card'),'stroke-width':2});
     bindTip(dot,tt(r.name,r.rows||[['값',fmtV(r.value)]]));svg.appendChild(dot);
@@ -955,11 +1111,14 @@ const dHTML=(v,lab,isPP)=>{
 
 function renderPay(){
   const M=document.getElementById('boardPay');M.innerHTML='';
+  const XT=(PAY.meta.excluded||{}).test,XW=(PAY.meta.excluded||{}).withdrawn;
+  const xNote=[XT&&XT.po?`시험 PO ${XT.po}건(${eok(XT.sales,2)})`:'',XW&&XW.po?`철회 PO ${XW.po}건`:''].filter(Boolean).join(' · ');
   M.insertAdjacentHTML('beforeend',`
     <div class="board-intro" style="--accent:var(--critical)">
-      <span>🔴</span><span><b>지금 돈이 어디까지 들어왔나</b> — 축: <span class="axis">입금일(PaymentDate)</span>.
-      Power BI '입금 현황' 페이지와 같은 기준이라 통계분석 보드(선적일 기준)와 수치가 다릅니다.
-      입금일이 기준일 이후면 <b>수금 예정</b>으로 분리해 집계합니다.</span></div>
+      <span>🔴</span><span><b>지금 돈이 어디까지 들어왔나</b> — 축: <span class="axis">입금일(품목 결제일)</span>.
+      분할·부분 선적은 품목 결제일별로 나눠 잡습니다. Power BI는 PO 결제일(마지막 회차) 하나로 잡아 월별 금액이 다를 수 있습니다.
+      입금일이 기준일 이후면 <b>수금 예정</b>으로 분리해 집계합니다.${xNote?` ${xNote}은 제외했습니다.`:''}
+      ${PAY.meta.item_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 품목 정보를 읽지 못해 PO 결제일 기준으로 표시 중입니다.</b>':''}</span></div>
     <div class="filters" id="payFilters"><span class="flab">필터</span></div>
     <div class="grid g4" id="payKpi"></div>
     <div id="paySections"></div>`);
@@ -979,13 +1138,15 @@ function renderPay(){
     '<span class="hint">Power BI 슬라이서 대응 — 복수 선택 가능, 아무것도 안 고르면 전체</span>');
 
   const A=payAgg(payCells(paySelYears,paySelCust)),Y=payYoY();
+  A.sched_po=PAY.scheduled.filter(x=>(!paySelYears.size||paySelYears.has(x.ym.slice(0,4)))
+    &&(!paySelCust.size||paySelCust.has(x.bb))).reduce((a,x)=>a+x.po,0);
   const scope=paySelYears.size?[...paySelYears].sort().join(', '):'전체 연도';
   const s=eokS(A.col_sales),e=eokS(A.est);
   document.getElementById('payKpi').innerHTML=`
     <div class="card kpi accent"><div class="lab">입금 완료 <span style="color:var(--muted)">· ${esc(scope)}</span></div>
       <div class="val num">${s.v}<span class="u">${s.u}</span></div>
       <div class="sub">${KRW(A.col_sales)} · ${A.col_po}건</div>
-      ${(A.sales-A.col_sales)>0?`<div class="sub" style="margin-top:3px">수금 예정 ${eok(A.sales-A.col_sales,2)}(${A.po-A.col_po}건) 별도 → 합계 <b>${eok(A.sales,2)}</b> <span style="color:var(--muted)">= Power BI 매출입금액</span></div>`:''}
+      ${(A.sales-A.col_sales)>0?`<div class="sub" style="margin-top:3px">수금 예정 ${eok(A.sales-A.col_sales,2)}(${A.sched_po}건) 별도 → 합계 <b>${eok(A.sales,2)}</b></div>`:''}
       ${Y?dHTML(Y.sales,Y.label):''}</div>
     <div class="card kpi"><div class="lab">예상 매출이익 <span style="color:var(--muted)">· 수금완료분</span></div>
       <div class="val num">${e.v}<span class="u">${e.u}</span></div>
@@ -996,9 +1157,9 @@ function renderPay(){
       <div class="sub">물류·부대비 ${eok(A.col_cost-A.col_cogs,2)}(매출의 ${pct((A.col_cost-A.col_cogs)/A.col_sales,1)}) 차감 후
         <span style="color:var(--muted)">· 미차감 시 ${pct(A.gmargin,1)}</span></div>
       ${Y?dHTML(Y.marginPP,Y.label,true):''}</div>
-    <div class="card kpi"><div class="lab">입금 PO</div>
+    <div class="card kpi"><div class="lab">입금 건수</div>
       <div class="val num">${A.col_po}<span class="u">건</span></div>
-      <div class="sub">평균 ${A.col_po?KRW(A.col_sales/A.col_po):'-'}/건</div>
+      <div class="sub">평균 ${A.col_po?KRW(A.col_sales/A.col_po):'-'}/건 · 분할 입금은 회차(월)별로 셈</div>
       ${Y?dHTML(Y.po,Y.label):''}</div>`;
 
   const S=document.getElementById('paySections');
@@ -1029,7 +1190,7 @@ function renderPay(){
           <div><div style="font-size:24px;font-weight:680;color:${gap>0?'var(--bad-ink)':'var(--good-ink)'}" class="num">${gap>0?eok(gap,1):'달성'}</div>
             <div style="font-size:11.5px;color:var(--muted)">${gap>0?'신규 수주로 채울 금액':'목표 초과'}</div></div>
           <div><div style="font-size:24px;font-weight:680" class="num">${eok(ship.sales+prod.sales,1)}</div>
-            <div style="font-size:11.5px;color:var(--muted)">아직 못 받은 돈 (${ship.po+prod.po}건)</div></div>`;
+            <div style="font-size:11.5px;color:var(--muted)">아직 못 받은 돈 (${P.open_po!=null?P.open_po:ship.po+prod.po}건)</div></div>`;
         m.appendChild(b);},
       tableHTML:table(['단계','금액','건수','목표 대비','원가 등록'],[
         {cells:['① 수금 완료',KRW(done.sales),done.po+'건',pct(done.sales/target),'-']},
@@ -1038,7 +1199,8 @@ function renderPay(){
         {cells:['③ 생산 중',KRW(prod.sales),prod.po+'건',pct(prod.sales/target),
           `<span class="pill mut">${prod.cogs_po}/${prod.po}건</span>`]},
         {cells:['<b>확보 매출 합계</b>','<b>'+KRW(secured)+'</b>',
-          '<b>'+(done.po+ship.po+prod.po)+'건</b>','<b>'+pct(secured/target)+'</b>','-']},
+          '<b>'+(P.secured_po!=null?P.secured_po:done.po+ship.po+prod.po)+'건</b>','<b>'+pct(secured/target)+'</b>',
+          P.secured_po!=null?'<span class="mutx">단계에 걸친 PO는 1건</span>':'-']},
         {cells:['신규 수주 필요',KRW(gap),'-',pct(gap/target),'-']}])});
     /* 매입 3단 + 예상 매출이익 */
     const PU=PAY.purchase;
@@ -1109,7 +1271,7 @@ function renderPay(){
         {name:'입금 완료',color:cv('--s1'),values:mo.map(x=>x.sales)},
         {name:'예상 매출이익',color:cv('--s2'),values:mo.map(x=>x.est)}],
         fmtY:v=>eok(v,1),fmtTip:v=>KRW(v),rotate:mo.length>14});},
-    tableHTML:table(['월','PO 건수','매출입금액','매입송금액','매출총이익','매출이익률','영업이익','영업이익률'],
+    tableHTML:table(['월','입금 건수','매출입금액','매입송금액','매출총이익','매출이익률','영업이익','영업이익률'],
       mo.map(x=>({cells:[x.ym,x.po+'건',KRW(x.sales),KRW(x.cogs),KRW(x.gross),pct(x.gmargin),
         KRW(x.est),pct(x.margin)]})))});
 
@@ -1140,7 +1302,7 @@ function renderPay(){
 
   /* 데이터 점검 */
   const Q=PAY.meta.quality;
-  if(Q.anomaly_count||Q.gap_count){
+  if(Q.anomaly_count||Q.gap_count||Q.mismatch_count){
     const secQ=document.createElement('section');
     secQ.innerHTML=`<div class="sec-head"><span class="eyebrow">점검</span><h2>고쳐야 할 데이터</h2><span class="rule"></span>
       <span class="sub">SharePoint에서 수정 대상</span></div><div class="grid g2" id="qRow"></div>`;
@@ -1160,6 +1322,14 @@ function renderPay(){
         <div class="note">이미 <b>선적·납품된</b> PO인데 매입 원가가 없습니다. (생산 전 단계는 정상이라 제외)</div></div></div>
         ${table(['PO','고객','상태','ETD','납품','금액'],
           Q.gaps.map(g=>({cells:[esc(g.po),esc(g.bb),esc(g.status),g.etd,g.delivery,KRW(g.sales)]})))}
+      </div>`);
+    }
+    if(Q.mismatch_count){
+      qRow.insertAdjacentHTML('beforeend',`<div class="card">
+        <div class="card-head"><div><h3>결제일 불일치 — ${Q.mismatch_count}건 · ${eok(Q.mismatch_sales,2)}</h3>
+        <div class="note">PO 결제일이 품목 결제일과 <b>한 달 넘게</b> 다릅니다. 이 화면은 품목 결제일로 집계하므로, 어느 쪽이 맞는지 확인이 필요합니다.</div></div></div>
+        ${table(['PO','고객','상태','PO 결제일','품목 결제일','차이','금액'],
+          Q.mismatches.map(x=>({cells:[esc(x.po),esc(x.bb),esc(x.status),x.po_date,esc(x.item_dates),x.gap+'일',KRW(x.sales)]})))}
       </div>`);
     }
   }
@@ -1338,25 +1508,32 @@ function drawOps(){
     (!opsDeal.size||opsDeal.has(x.deal))&&
     (!opsInd.size||opsInd.has(x.industry)));
   const dated=fl.filter(x=>x.days_to!=null),undated=fl.filter(x=>x.days_to==null);
+  const late=fl.filter(x=>x.days_to!=null&&x.days_to<0),reqN=fl.filter(x=>x.del_src==='req').length;
   const sumS=fl.reduce((a,x)=>a+x.sales,0);
+  const dday=v=>v<0?'D+'+(-v):'D-'+v;
+  const reqPill=x=>x.del_src==='req'?' <span class="pill mut">요청</span>':'';
   vizCard(del,{title:`진행 중 PO ${fl.length}건 · ${eok(sumS,2)}`,
-    note:`발주는 됐고 아직 납품 전인 PO 전체 (고객 ${new Set(fl.map(x=>x.bb)).size}개사)`
+    note:`발주는 됐고 아직 납품 전인 PO 전체 (고객 ${new Set(fl.map(x=>x.bb)).size}개사) · 부분 선적은 남은 품목 금액만`
+      +(reqN?` · 선적 일정이 없는 ${reqN}건은 <b>고객 요청납기</b>로 표시`:'')
+      +(late.length?` · <b style="color:var(--bad-ink)">요청납기 경과 ${late.length}건</b>`:'')
       +(undated.length?` · 납품예정일 미정 ${undated.length}건`:''),
     draw:m=>{
       if(!fl.length){m.innerHTML='<div class="note" style="padding:20px 0">진행 중 PO가 없습니다.</div>';return;}
       const show=dated.slice(0,18);
       lollipop(m,{rows:show.map(x=>({name:x.po+' ('+shortName(x.name)+')',value:x.days_to,
         rows:[['고객',x.name],['발주일',x.po_date+' ('+x.po_age+'일 경과)'],['ETD',x.etd||'-'],
-              ['납품예정',x.delivery],['금액',KRW(x.sales)],['공장',x.ff||'-']]})),
-        fmtV:v=>'D-'+v,threshold:7,thLabel:'7일 이내'});
+              ['납품예정',x.delivery+(x.del_src==='req'?' (고객 요청납기)':'')],
+              ['금액',KRW(x.sales)+(x.partial?' (남은 품목)':'')],['공장',x.ff||'-']]})),
+        fmtV:dday,threshold:7,thLabel:'7일 이내',hotBelow:true});
       if(dated.length>show.length||undated.length){
         const n=document.createElement('div');n.className='note';n.style.marginTop='8px';
         n.textContent=`그래프는 임박한 ${show.length}건만 표시 — 전체는 '표'로 전환해 확인하세요.`;
         m.appendChild(n);}},
     tableHTML:table(['PO','고객','발주일','발주경과','ETD','납품예정','D-day','금액','공장'],
       fl.map(x=>({cells:[esc(x.po),esc(shortName(x.name)),x.po_date,x.po_age+'일',x.etd||'-',
-        x.delivery||'<span class="pill warn">미정</span>',
-        x.days_to!=null?('D-'+x.days_to):'-',KRW(x.sales),esc(x.ff||'-')],
+        x.delivery?x.delivery+reqPill(x):'<span class="pill warn">미정</span>',
+        x.days_to==null?'-':(x.days_to<0?`<span class="pill bad">${dday(x.days_to)}</span>`:dday(x.days_to)),
+        KRW(x.sales)+(x.partial?' <span class="pill mut">잔량</span>':''),esc(x.ff||'-')],
         soon:x.days_to!=null&&x.days_to<=7})),
       r=>r.soon)});
 
@@ -1366,7 +1543,10 @@ function drawOps(){
     ${table(['고객','거래상태','산업군','발주경과','평균주기(신뢰도)','지연','면담경과','다음 납품','2026 실적','달성율'],
       rows.map(c=>({cells:[esc(shortName(c.name)),esc(c.deal),esc(c.industry),c.po_elapsed+'일',gapCell(c),
         c.overdue?`<span class="pill bad">${c.overdue}일</span>`:'-',
-        meetCell(c),c.next_del||'-',eok(c.s2026,2),
+        meetCell(c),
+        (c.next_del?c.next_del+(c.next_del_src==='req'?' <span class="pill mut">요청</span>':''):'-')
+          +(c.late_del?` <span class="pill bad">요청납기 경과 ${c.late_del}</span>`:''),
+        eok(c.s2026,2),
         `<span class="pill ${c.progress>=0.5?'ok':c.progress>=0.3?'warn':'bad'}">${pct(c.progress,0)}</span>`],
         overdue:c.overdue})),
       r=>r.overdue>0)}</div>`;
@@ -1386,8 +1566,10 @@ document.querySelectorAll('#boardNav button').forEach(btn=>btn.addEventListener(
 
 document.getElementById('asOf').textContent='데이터 기준 '+PAY.meta.as_of;
 document.getElementById('foot').innerHTML=`
-  <div><b>보드별 축이 다릅니다</b> — 입금 현황: 입금일(PaymentDate) · 영업 현황: 발주일(PODate).
+  <div><b>보드별 축이 다릅니다</b> — 입금 현황: 입금일(품목 결제일) · 영업 현황: 발주일(PODate).
   같은 데이터라도 "언제로 계산하느냐"가 달라 금액이 다릅니다.</div>
+  <div style="margin-top:8px"><b>집계 대상</b> — 시험·재고이동 PO와 철회(Withdrawn) PO·품목은 뺍니다. 금액은 PO 합계를 품목 매출 비중으로 나눠 품목 결제일에 배분합니다.
+  진행 중 PO의 납품예정은 품목 선적 일정, 없으면 고객 요청납기입니다.</div>
   <div style="margin-top:8px"><b>예상 매출이익</b> = 매출 × (원가 등록분의 마진율). 원가 미등록 PO를 같은 마진으로 가정한 추정치이며, 확정 이익과 원가등록율을 함께 표기합니다.</div>
   <div style="margin-top:8px"><b>평균 발주주기</b>는 고객마다 다릅니다. 최근 2년 발주 간격의 평균이며, 표본 수와 편차로 신뢰도(높음/보통/낮음)를 판정합니다.</div>
   <div style="margin-top:8px">출처: KNC 분기영업 파이프라인 + KNC WORK LOG · 데이터 품질: 입금일 이상 ${PAY.meta.quality.payment_date_invalid}건 · 미입력 ${PAY.meta.quality.payment_date_missing}건 / 전체 ${PAY.meta.quality.total_po}건 ·
