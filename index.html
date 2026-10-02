@@ -256,7 +256,8 @@ let D = { pay: null, ops: null };
    KNC 영업 전광판 — Graph API 데이터 공급부
    뷰어 본인 계정으로 SharePoint 리스트를 직접 읽어 집계한다.
    결과는 build_*.py 가 만들던 번들과 **같은 모양**이라 화면 코드는 그대로 쓴다.
-   2026-10: 앱 Shipment v1 대응 — 품목(POItem) 단위 입금·진행 판정, 시험·철회 PO 제외
+   2026-10: 앱 Shipment v1 대응 — 매출·매입·입금일·진행 판정 모두 품목(POItem) 기준,
+            PO 기준은 PO 건수·상태 같은 PO별 통계만. 시험·철회 PO 제외
    ============================================================ */
 
 const CFG = {
@@ -283,9 +284,10 @@ const F = {
   target: '_xc601__xc5c5__xbaa9__xd45c__x00',    // 영업목표 (SalesTarget, currency)
 };
 
-/* POItem은 필요한 칸만 받는다 (전체 칸을 받으면 수 MB) */
-const ITEM_FIELDS = ['PO_NoLookupId', 'Sales', 'PaymentDate', 'Status', 'OperationalState',
-                     'DeliveryDate', 'ShipmentDate', 'PlannedETD'];
+/* 품목·원가는 필요한 칸만 받는다 (전체 칸을 받으면 수 MB) */
+const ITEM_FIELDS = ['PO_NoLookupId', 'Sales', 'SalesUSD', 'Currency', 'FXRate', 'PaymentDate', 'Status',
+                     'OperationalState', 'DeliveryDate', 'ShipmentDate', 'SumCOGS', 'LogisticCost', 'ExtraCost'];
+const COGS_FIELDS = ['POItemIDLookupId', 'Price', 'KRW_x002f_USD', 'PaymentConfirmation', 'PaymentDate', 'OperationalState'];
 
 /* ── 인증 ── (msal-browser UMD 전역은 `msal`) */
 let msalApp, account;
@@ -339,7 +341,8 @@ async function fetchList(listId, onProgress, select) {
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + t } });
     if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const j = await res.json();
-    out.push(...j.value.map(v => v.fields || v));
+    // $select 로 받으면 fields 안에 id가 없다 → 리스트 항목 id를 붙여 둔다 (COGS↔품목 연결용)
+    out.push(...j.value.map(v => (v.fields ? Object.assign({ id: v.id }, v.fields) : v)));
     url = j['@odata.nextLink'] || null;
     if (onProgress) onProgress(out.length);
   }
@@ -355,6 +358,11 @@ const ym_ = d => d.toISOString().slice(0, 7);
 const doy = d => Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 864e5);
 const validD = d => (d && d.getUTCFullYear() >= 2000 ? d : null);   // 1970-01-01 같은 오류값은 날짜 없음으로
 const DAY = 864e5;
+/* 품목 날짜 여러 개를 한 칸에 — 가장 이른 날 + 나머지 회차 수 (예: 2026-08-22 외 1) */
+function dateSpan(ds) {
+  const u = [...new Set(ds.filter(Boolean).map(ymd))].sort();
+  return u.length ? u[0] + (u.length > 1 ? ` 외 ${u.length - 1}` : '') : '';
+}
 
 /* PO 번호에서 제품(PP)·고객(BB) 코드 분리: 예 VH-2734-BY */
 function parsePono(no) {
@@ -393,41 +401,72 @@ function groupItems(items) {
   return m;
 }
 
-/* 품목 매출 비중 — PO 합계(매출·원가)를 품목에 나눌 때 쓴다.
-   PO 합계는 그대로 두고(= Power BI 연간 합계와 같은 원천) 날짜만 품목 기준으로 가른다. */
-function itemWeights(its) {
-  const tot = its.reduce((a, it) => a + N_(it.Sales), 0);
-  return tot > 0 ? its.map(it => N_(it.Sales) / tot) : null;
+/* ── 품목 금액 ──
+   매출 = POItem.Sales (원화). 달러 단가 품목인데 환율이 비어 있으면(FXRate ≤ 1) 달러 숫자가 그대로 들어가 있어
+          집계에서 빼고 '원화 환산 누락'으로 보여준다.
+   매입 = 품목 원가 + 품목 물류비(LogisticCost) + 품목 부대비(ExtraCost).
+          품목 원가 = COGS 리스트 행 합 (Price[달러, 조정액 포함] × KRW_x002f_USD[원/달러]).
+          COGS 행이 없거나 환율 빠진 행이 있으면 POItem.SumCOGS (분할 선적으로 생긴 품목은 COGS 행이 없다). */
+const fxMissing = it => it.Currency === 'USD' && N_(it.FXRate) <= 1;
+const itemSales = it => (fxMissing(it) ? 0 : N_(it.Sales));
+
+function itemCostMap(cogsRows) {
+  const m = new Map();
+  for (const c of cogsRows || []) {
+    if (withdrawn(c)) continue;
+    const k = String(c.POItemIDLookupId || '');
+    if (!k) continue;
+    if (!m.has(k)) m.set(k, { krw: 0, paid: 0, norate: 0 });
+    const o = m.get(k), rate = N_(c.KRW_x002f_USD);
+    if (!rate) { o.norate++; continue; }
+    const v = N_(c.Price) * rate;
+    o.krw += v;
+    if (c.PaymentConfirmation === true) o.paid += v;
+  }
+  return m;
 }
 
-/* 입금 분할 — 앱 v1은 분할·부분 선적 품목마다 결제일을 따로 두고
-   PO 결제일에는 그중 가장 늦은 날짜만 남긴다. 그래서 품목 결제일로 쪼갠다.
-   · 품목이 없거나 품목 매출 합계가 0 → PO 결제일 하나로 (예전 방식)
+function itemMoney(it, costMap) {
+  const c = costMap.get(String(it.id));
+  let cogs = 0, paid = 0;
+  if (c && !c.norate) { cogs = c.krw; paid = c.paid; }
+  else if (N_(it.SumCOGS) > 0) cogs = N_(it.SumCOGS);           // 지급 여부는 알 수 없음 → 미지급으로
+  else if (c) { cogs = c.krw; paid = c.paid; }
+  const sales = itemSales(it);
+  return { sales, cogs, paid, cost: cogs + N_(it.LogisticCost) + N_(it.ExtraCost), covered: cogs > 0 };
+}
+
+/* PO 하나를 입금 단위로 — 품목마다 결제일·금액·상태
+   앱 v1은 분할·부분 선적 품목마다 결제일을 따로 두고 PO 결제일엔 그중 가장 늦은 날짜만 남긴다.
+   · 품목이 없음 → PO 헤더 값 하나로 (예전 방식)
    · 어느 품목에도 결제일이 없음 → 모든 품목에 PO 결제일 (옛 데이터)
    · 일부 품목만 결제일 있음 → 없는 품목은 '결제일 미정' (아직 선적 전인 잔량) */
-function payParts(f, its) {
+function poUnits(f, its, costMap) {
   const pd = validD(D_(f.Payment_Date));
-  const w = its.length ? itemWeights(its) : null;
-  if (!w) return [{ date: pd, w: 1, st: f.Status || null }];
+  if (!its.length) {
+    const cogs = N_(f.COGSTotal);
+    return [{ date: pd, st: f.Status || null, sales: N_(f.Sales_KRW_Total), cogs, paid: 0,
+              cost: cogs + N_(f.ExtraKRWTotal) + N_(f.LogisticKRWTotal), covered: cogs > 0 }];
+  }
   const anyItemDate = its.some(it => validD(D_(it.PaymentDate)));
-  return its.map((it, i) => ({
+  return its.map(it => Object.assign({
     date: anyItemDate ? validD(D_(it.PaymentDate)) : pd,
-    w: w[i],
     st: it.Status || f.Status || null,
-  }));
+  }, itemMoney(it, costMap)));
 }
 
 /* ── 집계: 입금 현황 ── */
-function buildPay(poRows, items, buyers, asof) {
+function buildPay(poRows, items, cogsRows, buyers, asof) {
   const CUR_Y = String(asof.getUTCFullYear());
   const cutoff = doy(asof);
   const FROM_Y = 2021;
   const itemsBy = groupItems(items);
+  const costMap = itemCostMap(cogsRows);
   const cells = new Map(), sched = new Map();
   const key = (bb, ym) => bb + '|' + ym;
 
   const statusAgg = new Map();
-  const gaps = [], anomalies = [], mismatches = [];
+  const gaps = [], anomalies = [], fxList = [];
   const excluded = { test: { po: 0, sales: 0 }, withdrawn: { po: 0, sales: 0 } };
   const pipeline = {
     collected: { po: 0, sales: 0 },
@@ -439,55 +478,64 @@ function buildPay(poRows, items, buyers, asof) {
   // 건수는 PO 중복 없이 센다 (한 PO가 여러 회차로 나뉘어도 같은 칸에선 1건)
   const pset = {}, pcov = {};
   for (const k in pipeline) { pset[k] = new Set(); pcov[k] = new Set(); }
-  const regSet = new Set(), unregSet = new Set();
-  let regSales = 0, regCost = 0, unregSales = 0, paidKrw = 0, unpaidKrw = 0, paidPo = 0;
+  const regSet = new Set(), unregSet = new Set(), paidSet = new Set();
+  let regSales = 0, regCost = 0, unregSales = 0, paidKrw = 0, unpaidKrw = 0;
   let included = 0, splitPo = 0;
 
   for (const f of poRows) {
     const pono = (f.Title || '').trim();
     if (!pono) continue;
     const why = excludeReason(f);
-    if (why) { excluded[why].po++; excluded[why].sales += N_(f.Sales_KRW_Total); continue; }
+    if (why) {
+      const xi = itemsBy.get(String(f.id)) || [];
+      excluded[why].po++;
+      excluded[why].sales += xi.length ? xi.reduce((a, it) => a + itemSales(it), 0) : N_(f.Sales_KRW_Total);
+      continue;
+    }
     included++;
     const { bb } = parsePono(pono);
-    const sales = N_(f.Sales_KRW_Total);
-    const cogs = N_(f.COGSTotal);
-    const cost = cogs + N_(f.ExtraKRWTotal) + N_(f.LogisticKRWTotal);
-    const covered = cogs > 0;
     const st = f.Status || null;
-    const pd = D_(f.Payment_Date), pod = D_(f.field_4);
+    const pod = D_(f.field_4);
     const its = itemsBy.get(String(f.id)) || [];
+    const units = poUnits(f, its, costMap);
+    const poSales = units.reduce((a, u) => a + u.sales, 0);
 
-    // 상태별 집계 + 원가 누락 판정 (PO 단위)
+    // 점검 카드의 ETD·납품일은 해당 품목 값으로 (PO 헤더 ETD는 계획일이 갱신 안 된 채 남아 있다)
+    const etdTxt = (xs = its) => dateSpan(xs.map(it => it && validD(D_(it.ShipmentDate))));
+    const delTxt = (xs = its) => dateSpan(xs.map(it => it && validD(D_(it.DeliveryDate))));
+
+    // PO별 통계 — 상태별 건수 (금액은 품목 합)
     const sk = st || '(미지정)';
     if (!statusAgg.has(sk)) statusAgg.set(sk, { status: sk, po: 0, cogs_po: 0, sales: 0, missing_sales: 0, pre_cost: PRE_COST.has(sk) });
     const sa = statusAgg.get(sk);
-    sa.po++; sa.sales += sales;
-    if (covered) sa.cogs_po++;
-    else {
-      sa.missing_sales += sales;
-      if (POST_COST.has(st)) gaps.push({ po: pono, bb, status: st, sales,
-        etd: f.field_5 ? String(f.field_5).slice(0, 10) : '', delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
-    }
-    // 입금일 이상값 (PO 헤더)
-    if (f.Payment_Date && !validD(pd)) {
-      anomalies.push({ po: pono, bb, value: String(f.Payment_Date).slice(0, 19), sales,
-        status: st || '(미지정)', podate: pod ? ymd(pod) : '', etd: f.field_5 ? String(f.field_5).slice(0, 10) : '',
-        delivery: f.DeliveryDate ? String(f.DeliveryDate).slice(0, 10) : '' });
-    }
-    // 확인 필요: PO 결제일이 어느 품목 결제일과도 한 달 넘게 다름 (집계는 품목 기준)
-    const pdv = validD(pd);
-    const idates = its.map(it => validD(D_(it.PaymentDate))).filter(Boolean);
-    if (pdv && idates.length && !idates.some(x => +x === +pdv)) {
-      const g = Math.min(...idates.map(x => Math.abs(x - pdv) / DAY));
-      if (g > 31) mismatches.push({ po: pono, bb, status: st || '(미지정)', sales, gap: Math.round(g),
-        po_date: ymd(pdv), item_dates: [...new Set(idates.map(ymd))].sort().join(', ') });
-    }
+    sa.po++; sa.sales += poSales;
+    if (units.some(u => u.covered)) sa.cogs_po++; else sa.missing_sales += poSales;
 
-    const parts = payParts(f, its);
-    if (new Set(parts.map(p => p.date ? +p.date : 0)).size > 1) splitPo++;
-    for (const p of parts) {
-      const s = sales * p.w, co = cost * p.w, cg = cogs * p.w, d = p.date;
+    // 원가 누락 — 이미 선적·납품된 품목인데 원가가 없음 (품목 단위로 찾아 PO별로 묶음)
+    const gapUnits = its.length
+      ? its.map((it, i) => [it, units[i]]).filter(([it, u]) => POST_COST.has(it.Status) && u.sales > 0 && !u.covered)
+      : (POST_COST.has(st) && !units[0].covered && units[0].sales > 0 ? [[null, units[0]]] : []);
+    const gapIts = gapUnits.map(([it]) => it).filter(Boolean);
+    if (gapUnits.length) gaps.push({ po: pono, bb, status: st, items: gapUnits.length,
+      sales: gapUnits.reduce((a, [, u]) => a + u.sales, 0),
+      etd: gapIts.length ? etdTxt(gapIts) : '', delivery: gapIts.length ? delTxt(gapIts) : '' });
+
+    // 입금일 이상값 — 품목 결제일 기준 (1970-01-01 같은 값)
+    const badPay = its.map((it, i) => [it, units[i]]).filter(([it]) => it.PaymentDate && !validD(D_(it.PaymentDate)));
+    if (badPay.length) anomalies.push({ po: pono, bb, status: st || '(미지정)',
+      sales: badPay.reduce((a, [, u]) => a + u.sales, 0),
+      value: [...new Set(badPay.map(([it]) => String(it.PaymentDate).slice(0, 10)))].join(', '),
+      podate: pod ? ymd(pod) : '', etd: etdTxt(badPay.map(([it]) => it)), delivery: delTxt(badPay.map(([it]) => it)) });
+
+    // 원화 환산 누락 — 달러 단가 품목인데 환율이 비어 있음
+    const fx = its.filter(fxMissing);
+    if (fx.length) fxList.push({ po: pono, bb, status: st || '(미지정)', items: fx.length,
+      usd: fx.reduce((a, it) => a + (N_(it.SalesUSD) || N_(it.Sales)), 0) });
+
+    if (new Set(units.map(u => u.date ? +u.date : 0)).size > 1) splitPo++;
+    for (const u of units) {
+      const s = u.sales, co = u.cost, cg = u.cogs, d = u.date, covered = u.covered;
+      const counts = s !== 0;                       // 매출 0인 품목(무상 재공급 등)은 건수에 넣지 않는다
 
       // 셀 집계 (고객 × 입금월)
       if (d && d.getUTCFullYear() >= FROM_Y) {
@@ -498,17 +546,17 @@ function buildPay(poRows, items, buyers, asof) {
           ytd_sales: 0, ytd_cost: 0, ytd_cogs: 0, ytd_csales: 0, ytd_po: 0,
           _po: new Set(), _col: new Set(), _ytd: new Set() });
         const c = cells.get(k);
-        c.sales += s; c._po.add(pono);
+        c.sales += s; if (counts) c._po.add(pono);
         if (covered) { c.cost += co; c.cogs += cg; c.csales += s; }
         if (d <= asof) {
-          c.col_sales += s; c._col.add(pono);
+          c.col_sales += s; if (counts) c._col.add(pono);
           if (covered) { c.col_cost += co; c.col_cogs += cg; c.col_csales += s; }
         } else {
           if (!sched.has(k)) sched.set(k, { bb: bb || '미상', ym: ym_(d), sales: 0, po: 0, _po: new Set() });
-          const s2 = sched.get(k); s2.sales += s; s2._po.add(pono);
+          const s2 = sched.get(k); s2.sales += s; if (counts) s2._po.add(pono);
         }
         if (doy(d) <= cutoff) {
-          c.ytd_sales += s; c._ytd.add(pono);
+          c.ytd_sales += s; if (counts) c._ytd.add(pono);
           if (covered) { c.ytd_cost += co; c.ytd_cogs += cg; c.ytd_csales += s; }
         }
       }
@@ -516,22 +564,24 @@ function buildPay(poRows, items, buyers, asof) {
       // 파이프라인 (수금완료 / 미수금 진행분) — 진행 단계는 품목 상태로
       if (pod) {
         if (d && d <= asof) {
-          if (String(d.getUTCFullYear()) === CUR_Y) { pipeline.collected.sales += s; pset.collected.add(pono); }
+          if (String(d.getUTCFullYear()) === CUR_Y) { pipeline.collected.sales += s; if (counts) pset.collected.add(pono); }
         } else {
-          const grp = PRE_COST.has(p.st) ? '생산 중' : (POST_COST.has(p.st) ? '출하·납품 완료' : '상태미상');
-          if (grp !== '상태미상' || p.st) {
-            pipeline[grp].sales += s; pset[grp].add(pono);
-            if (covered) pcov[grp].add(pono);
-            if (!d) { pipeline.no_paydate.sales += s; pset.no_paydate.add(pono); }
+          const grp = PRE_COST.has(u.st) ? '생산 중' : (POST_COST.has(u.st) ? '출하·납품 완료' : '상태미상');
+          if (grp !== '상태미상' || u.st) {
+            pipeline[grp].sales += s;
+            if (counts) { pset[grp].add(pono); if (covered) pcov[grp].add(pono); }
+            if (!d) { pipeline.no_paydate.sales += s; if (counts) pset.no_paydate.add(pono); }
           }
         }
-        // 매입 3단 (파이프라인 대상분)
+        // 매입 3단 (파이프라인 대상분) — 지급 완료는 COGS 지급확인(PaymentConfirmation) 기준
         const inPipe = (d && d <= asof)
           ? String(d.getUTCFullYear()) === CUR_Y
-          : (PRE_COST.has(p.st) || POST_COST.has(p.st));
+          : (PRE_COST.has(u.st) || POST_COST.has(u.st));
         if (inPipe) {
-          if (covered) { regSales += s; regCost += co; unpaidKrw += co; regSet.add(pono); }
-          else { unregSales += s; unregSet.add(pono); }
+          if (covered) {
+            regSales += s; regCost += co; paidKrw += u.paid; unpaidKrw += co - u.paid;
+            regSet.add(pono); if (u.paid > 0) paidSet.add(pono);
+          } else if (s !== 0) { unregSales += s; unregSet.add(pono); }
         }
       }
     }
@@ -550,6 +600,19 @@ function buildPay(poRows, items, buyers, asof) {
     delete c._po; delete c._col; delete c._ytd; return c;
   });
   const schedRows = [...sched.values()].map(s => { s.po = s._po.size; delete s._po; return s; });
+  // 지급확인 기록률 — 지급예정일이 30~210일 지난 원가 중 지급확인(PaymentConfirmation)된 비율.
+  // 낮으면 지급 완료/미지급 구분을 믿기 어렵다는 경고를 띄운다 (2026-10 기준 4월 이후 기록이 끊겨 있음)
+  let dueAll = 0, dueOk = 0;
+  for (const c of cogsRows || []) {
+    const due = validD(D_(c.PaymentDate)), rate = N_(c.KRW_x002f_USD);
+    if (!due || !rate || withdrawn(c)) continue;
+    const age = (asof - due) / DAY;
+    if (age < 30 || age > 210) continue;
+    const v = N_(c.Price) * rate;
+    dueAll += v; if (c.PaymentConfirmation === true) dueOk += v;
+  }
+  const payRecord = costMap.size ? (dueAll ? dueOk / dueAll : 1) : 0;
+
   const costRate = regSales ? regCost / regSales : 0;
   const estKrw = unregSales * costRate;
   const pipeSales = regSales + unregSales;
@@ -571,7 +634,8 @@ function buildPay(poRows, items, buyers, asof) {
       board: '입금 현황', axis: '입금일(품목 결제일)', as_of: ymd(asof),
       cutoff_doy: cutoff, current_year: CUR_Y, from_year: FROM_Y,
       generated: new Date().toISOString(),
-      item_basis: itemsBy.size > 0,       // 품목을 못 읽으면 PO 결제일 하나로 집계된다
+      item_basis: itemsBy.size > 0,       // 품목을 못 읽으면 PO 헤더 값으로 집계된다
+      cogs_basis: costMap.size > 0,       // COGS 리스트를 못 읽으면 품목 SumCOGS로, 지급 완료는 0
       split_po: splitPo,                  // 결제일이 2개 이상으로 나뉜 PO
       excluded,
       quality: {
@@ -584,16 +648,15 @@ function buildPay(poRows, items, buyers, asof) {
           sales: [...statusAgg.values()].filter(s => s.pre_cost).reduce((a, s) => a + s.missing_sales, 0),
         },
         gaps, gap_count: gaps.length, gap_sales: gaps.reduce((a, g) => a + g.sales, 0),
-        mismatches: mismatches.sort((a, b) => b.gap - a.gap),
-        mismatch_count: mismatches.length,
-        mismatch_sales: mismatches.reduce((a, x) => a + x.sales, 0),
+        fx_missing: fxList, fx_count: fxList.length,
+        fx_items: fxList.reduce((a, x) => a + x.items, 0), fx_usd: fxList.reduce((a, x) => a + x.usd, 0),
       },
     },
     annual_target: annualTarget,
     pipeline,
     purchase: {
-      sales: pipeSales, po: regSet.size + unregSet.size,
-      paid: { krw: paidKrw, po: paidPo },
+      sales: pipeSales, po: new Set([...regSet, ...unregSet]).size,   // 원가 등록·미등록 품목이 섞인 PO는 1건
+      paid: { krw: paidKrw, po: paidSet.size },
       unpaid: { krw: unpaidKrw, po: regSet.size },
       unregistered: { krw: estKrw, po: unregSet.size, sales: unregSales, rate: costRate },
       total_cost: totalCost,
@@ -601,7 +664,7 @@ function buildPay(poRows, items, buyers, asof) {
       margin: pipeSales ? (pipeSales - totalCost) / pipeSales : null,
       confirmed_profit: regSales - regCost,
       confirmed_margin: regSales ? (regSales - regCost) / regSales : null,
-      cogs_paydate_coverage: 0,
+      cogs_paydate_coverage: payRecord,   // 지급 완료 = COGS 지급확인 기준. 기록률이 낮으면(또는 못 읽으면) 화면에 경고
     },
     customers,
     cells: cellRows,
@@ -616,9 +679,12 @@ async function loadLive(onProgress) {
   onProgress && onProgress('PO 리스트 읽는 중…');
   const po = await fetchList(CFG.lists.po, n => onProgress && onProgress(`PO ${n}건…`));
   onProgress && onProgress('품목 읽는 중…');
-  let items = [];
+  let items = [], cogs = [];
   try { items = await fetchList(CFG.lists.poitem, n => onProgress && onProgress(`품목 ${n}건…`), ITEM_FIELDS); }
-  catch (e) { console.warn('POItem 조회 실패 — PO 결제일 기준으로 집계합니다:', e.message); }
+  catch (e) { console.warn('POItem 조회 실패 — PO 헤더 값으로 집계합니다:', e.message); }
+  onProgress && onProgress('원가 읽는 중…');
+  try { cogs = await fetchList(CFG.lists.cogs, n => onProgress && onProgress(`원가 ${n}건…`), COGS_FIELDS); }
+  catch (e) { console.warn('COGS 조회 실패 — 품목 SumCOGS로 집계합니다:', e.message); }
   onProgress && onProgress('고객 정보 읽는 중…');
   const buyers = await fetchList(CFG.lists.buyer);
   onProgress && onProgress('업무일지 읽는 중…');
@@ -627,7 +693,7 @@ async function loadLive(onProgress) {
   catch (e) { console.warn('WORK LOG 조회 실패 — 면담 경과일은 비웁니다:', e.message); }
   const asof = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
   onProgress && onProgress('집계 중…');
-  return { pay: buildPay(po, items, buyers, asof),
+  return { pay: buildPay(po, items, cogs, buyers, asof),
            ops: buildOps(po, items, buyers, worklog, asof),
            _who: account.username };
 }
@@ -645,34 +711,34 @@ const WL = {
    · 품목 납품일이 지났거나 품목 상태가 Delivered/Buyer Paid → 납품 끝
    · 남은 품목의 납품예정 = 품목 납품일(선적 구성 후 생김) 중 가장 이른 날.
      선적 일정이 하나도 없으면 고객 요청납기(BuyerRequestDeliveryDate) — 앱 v1은 선적 구성(T2) 전엔 납품일을 쓰지 않는다
-   · ETD = 남은 품목의 선적일(T2) 또는 항차 계획 ETD(T1). PO 헤더 ETD(field_5)는 v0 시절 값이 남아 있어 쓰지 않는다
+   · ETD = 남은 품목의 선적일(POItem.ShipmentDate, 선적 구성 후 생김). PO 헤더 ETD(field_5)는
+     계획일이 갱신 안 된 채 남아 있어 쓰지 않는다. 항차 계획(PlannedETD)도 지난 계획이 남아 있어 쓰지 않는다
+   · 금액 = 남은 품목의 매출 합 (POItem.Sales)
    · 품목이 없으면 PO 헤더 값으로 (예전 방식) */
 function poSchedule(f, its, asof) {
   const req = validD(D_(f.BuyerRequestDeliveryDate));
-  const sales = N_(f.Sales_KRW_Total);
   if (!its.length) {
     const dl = validD(D_(f.DeliveryDate));
     const open = !(dl && dl <= asof);
-    return { open, sales_open: open ? sales : 0, partial: false,
+    return { open, sales: N_(f.Sales_KRW_Total), sales_open: open ? N_(f.Sales_KRW_Total) : 0, partial: false,
              next: open ? (dl ? { d: dl, src: 'ship' } : (req ? { d: req, src: 'req' } : null)) : null,
-             last_del: dl && dl <= asof ? dl : null, etd: validD(D_(f.field_5)) };
+             last_del: dl && dl <= asof ? dl : null, etd: null };
   }
-  const w = itemWeights(its);
-  let openW = 0, nOpen = 0, ship = null, unscheduled = false, last = null, etd = null;
-  its.forEach((it, i) => {
+  let salesOpen = 0, nOpen = 0, ship = null, unscheduled = false, last = null, etd = null;
+  for (const it of its) {
     const dl = validD(D_(it.DeliveryDate));
     const done = ITEM_DONE.has(it.Status) || (dl && dl <= asof);
     if (dl && dl <= asof && (!last || dl > last)) last = dl;
-    if (done) return;
+    if (done) continue;
     nOpen++;
-    openW += w ? w[i] : 1 / its.length;
+    salesOpen += itemSales(it);
     if (dl) { if (!ship || dl < ship) ship = dl; } else unscheduled = true;
-    const e = validD(D_(it.ShipmentDate)) || validD(D_(it.PlannedETD));
+    const e = validD(D_(it.ShipmentDate));
     if (e && (!etd || e < etd)) etd = e;
-  });
+  }
   const next = ship ? { d: ship, src: 'ship' } : (unscheduled && req ? { d: req, src: 'req' } : null);
-  return { open: nOpen > 0, sales_open: sales * openW, partial: nOpen > 0 && nOpen < its.length,
-           next, last_del: last, etd };
+  return { open: nOpen > 0, sales: its.reduce((a, it) => a + itemSales(it), 0),
+           sales_open: salesOpen, partial: nOpen > 0 && nOpen < its.length, next, last_del: last, etd };
 }
 
 function buildOps(poRows, items, buyers, worklog, asof) {
@@ -748,10 +814,10 @@ function buildOps(poRows, items, buyers, worklog, asof) {
     const elapsed = Math.round((asof - lastPo) / DAY);
     const ratio = avg ? +(elapsed / avg).toFixed(2) : null;
 
-    const salesBy = {};
+    const salesBy = {};                           // 발주연도별 매출 (품목 매출 합)
     for (const f of prs) {
       const d = D_(f.field_4);
-      if (d) salesBy[d.getUTCFullYear()] = (salesBy[d.getUTCFullYear()] || 0) + N_(f.Sales_KRW_Total);
+      if (d) salesBy[d.getUTCFullYear()] = (salesBy[d.getUTCFullYear()] || 0) + sch.get(f).sales;
     }
     const b = bmap.get(bb) || {};
     const target = Number(b[F.target] || 0);
@@ -1116,9 +1182,10 @@ function renderPay(){
   M.insertAdjacentHTML('beforeend',`
     <div class="board-intro" style="--accent:var(--critical)">
       <span>🔴</span><span><b>지금 돈이 어디까지 들어왔나</b> — 축: <span class="axis">입금일(품목 결제일)</span>.
-      분할·부분 선적은 품목 결제일별로 나눠 잡습니다. Power BI는 PO 결제일(마지막 회차) 하나로 잡아 월별 금액이 다를 수 있습니다.
+      매출·매입 모두 품목 기준이라 분할·부분 선적은 품목 결제일별로 나눠 잡습니다. Power BI는 PO 합계를 PO 결제일(마지막 회차) 하나로 잡아 월별 금액이 다를 수 있습니다.
       입금일이 기준일 이후면 <b>수금 예정</b>으로 분리해 집계합니다.${xNote?` ${xNote}은 제외했습니다.`:''}
-      ${PAY.meta.item_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 품목 정보를 읽지 못해 PO 결제일 기준으로 표시 중입니다.</b>':''}</span></div>
+      ${PAY.meta.item_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 품목 정보를 읽지 못해 PO 헤더 값으로 표시 중입니다.</b>':''}
+      ${PAY.meta.item_basis!==false&&PAY.meta.cogs_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 원가(COGS) 리스트를 읽지 못해 품목 SumCOGS로 표시 중입니다.</b>':''}</span></div>
     <div class="filters" id="payFilters"><span class="flab">필터</span></div>
     <div class="grid g4" id="payKpi"></div>
     <div id="paySections"></div>`);
@@ -1205,7 +1272,7 @@ function renderPay(){
     /* 매입 3단 + 예상 매출이익 */
     const PU=PAY.purchase;
     vizCard(rcRow,{title:'매입 · 예상 매출이익 — 확보 매출 기준',
-      note:`범위 = 수금완료 + 출하·납품완료 + 생산중 (확보 매출 ${eok(PU.sales,1)}, PO ${PU.po}건). 위 KPI의 예상 매출이익은 <b>수금완료분만</b>이라 여기 값과 다릅니다. 매입은 지급완료·미지급·미등록(비례추정)으로 분해.`,
+      note:`범위 = 수금완료 + 출하·납품완료 + 생산중 (확보 매출 ${eok(PU.sales,1)}, PO ${PU.po}건). 위 KPI의 예상 매출이익은 <b>수금완료분만</b>이라 여기 값과 다릅니다. 매입 = 품목별 원가(COGS 기록) + 물류·부대비를 지급완료(COGS 지급확인)·미지급·미등록(비례추정)으로 분해.`,
       draw:m=>{
         goalBar(m,{target:PU.sales,segments:[
           {name:'지급 완료',value:PU.paid.krw,count:PU.paid.po,color:cv('--s2')},
@@ -1221,15 +1288,15 @@ function renderPay(){
           <div><div style="font-size:24px;font-weight:680" class="num">${eok(PU.total_cost,1)}</div>
             <div style="font-size:11.5px;color:var(--muted)">예상 총매입</div></div>`;
         m.appendChild(b);
-        if(PU.cogs_paydate_coverage<0.5){
+        if(PU.cogs_paydate_coverage<0.8){
           const w=document.createElement('div');w.className='note';w.style.marginTop='10px';
-          w.innerHTML=`⚠️ 매입 <b>지급일</b> 기록률이 ${pct(PU.cogs_paydate_coverage,0)}에 그쳐,
-            '지급 완료'와 '미지급' 구분은 아직 신뢰하기 어렵습니다. 합계(예상 총매입)는 유효합니다.`;
+          w.innerHTML=`⚠️ 지급예정일이 지난 원가(최근 6개월) 중 <b>지급확인 기록</b>이 ${pct(PU.cogs_paydate_coverage,0)}뿐입니다.
+            기록이 따라올 때까지 '지급 완료'와 '미지급' 구분은 신뢰하기 어렵습니다. 합계(예상 총매입)는 유효합니다.`;
           m.appendChild(w);}},
       tableHTML:table(['구분','금액','건수','매출 대비','비고'],[
         {cells:['① 지급 완료',KRW(PU.paid.krw),PU.paid.po+'건',pct(PU.paid.krw/PU.sales),
-          `COGS 지급일 기록률 ${pct(PU.cogs_paydate_coverage,0)}`]},
-        {cells:['② 미지급 (등록됨)',KRW(PU.unpaid.krw),PU.unpaid.po+'건',pct(PU.unpaid.krw/PU.sales),'원가는 등록, 송금 전']},
+          `COGS 지급확인 기준 · 기록률 ${pct(PU.cogs_paydate_coverage,0)}(최근 6개월)`]},
+        {cells:['② 미지급 (등록됨)',KRW(PU.unpaid.krw),PU.unpaid.po+'건',pct(PU.unpaid.krw/PU.sales),'원가·물류비 등록, 지급확인 전']},
         {cells:['③ 미등록 (비례 추정)',KRW(PU.unregistered.krw),PU.unregistered.po+'건',
           pct(PU.unregistered.krw/PU.sales),`매출 ${eok(PU.unregistered.sales,2)} × 원가율 ${pct(PU.unregistered.rate,1)}`]},
         {cells:['<b>예상 총매입</b>','<b>'+KRW(PU.total_cost)+'</b>','-','<b>'+pct(PU.total_cost/PU.sales)+'</b>','']},
@@ -1302,7 +1369,7 @@ function renderPay(){
 
   /* 데이터 점검 */
   const Q=PAY.meta.quality;
-  if(Q.anomaly_count||Q.gap_count||Q.mismatch_count){
+  if(Q.anomaly_count||Q.gap_count||Q.fx_count){
     const secQ=document.createElement('section');
     secQ.innerHTML=`<div class="sec-head"><span class="eyebrow">점검</span><h2>고쳐야 할 데이터</h2><span class="rule"></span>
       <span class="sub">SharePoint에서 수정 대상</span></div><div class="grid g2" id="qRow"></div>`;
@@ -1311,25 +1378,25 @@ function renderPay(){
     if(Q.anomaly_count){
       qRow.insertAdjacentHTML('beforeend',`<div class="card">
         <div class="card-head"><div><h3>입금일 오류 — ${Q.anomaly_count}건 · ${eok(Q.anomaly_sales,2)}</h3>
-        <div class="note">입금일이 <b>1970-01-01</b> 등 잘못된 값입니다. 연도 집계에서 빠지므로 실제 입금 예정일로 고쳐야 합니다.</div></div></div>
-        ${table(['PO','고객','상태','발주일','ETD','금액'],
-          Q.anomalies.map(a=>({cells:[esc(a.po),esc(a.bb),esc(a.status),a.podate,a.etd,KRW(a.sales)]})))}
+        <div class="note">품목 결제일이 <b>1970-01-01</b> 등 잘못된 값입니다. 연도 집계에서 빠지므로 실제 입금 예정일로 고쳐야 합니다.</div></div></div>
+        ${table(['PO','고객','상태','결제일 값','ETD','금액'],
+          Q.anomalies.map(a=>({cells:[esc(a.po),esc(a.bb),esc(a.status),esc(a.value),a.etd,KRW(a.sales)]})))}
       </div>`);
     }
     if(Q.gap_count){
       qRow.insertAdjacentHTML('beforeend',`<div class="card">
         <div class="card-head"><div><h3>원가 누락 — ${Q.gap_count}건 · ${eok(Q.gap_sales,2)}</h3>
-        <div class="note">이미 <b>선적·납품된</b> PO인데 매입 원가가 없습니다. (생산 전 단계는 정상이라 제외)</div></div></div>
-        ${table(['PO','고객','상태','ETD','납품','금액'],
-          Q.gaps.map(g=>({cells:[esc(g.po),esc(g.bb),esc(g.status),g.etd,g.delivery,KRW(g.sales)]})))}
+        <div class="note">이미 <b>선적·납품된 품목</b>인데 매입 원가(COGS)가 없습니다. 금액은 그 품목들의 매출. (생산 전 단계는 정상이라 제외)</div></div></div>
+        ${table(['PO','고객','상태','품목','ETD','납품','금액'],
+          Q.gaps.map(g=>({cells:[esc(g.po),esc(g.bb),esc(g.status),(g.items||'-')+'개',g.etd,g.delivery,KRW(g.sales)]})))}
       </div>`);
     }
-    if(Q.mismatch_count){
+    if(Q.fx_count){
       qRow.insertAdjacentHTML('beforeend',`<div class="card">
-        <div class="card-head"><div><h3>결제일 불일치 — ${Q.mismatch_count}건 · ${eok(Q.mismatch_sales,2)}</h3>
-        <div class="note">PO 결제일이 품목 결제일과 <b>한 달 넘게</b> 다릅니다. 이 화면은 품목 결제일로 집계하므로, 어느 쪽이 맞는지 확인이 필요합니다.</div></div></div>
-        ${table(['PO','고객','상태','PO 결제일','품목 결제일','차이','금액'],
-          Q.mismatches.map(x=>({cells:[esc(x.po),esc(x.bb),esc(x.status),x.po_date,esc(x.item_dates),x.gap+'일',KRW(x.sales)]})))}
+        <div class="card-head"><div><h3>원화 환산 누락 — PO ${Q.fx_count}건 · 품목 ${Q.fx_items}개 · $${Math.round(Q.fx_usd).toLocaleString()}</h3>
+        <div class="note">달러 단가 품목인데 환율이 비어 있어 매출 칸에 <b>달러 숫자가 그대로</b> 들어가 있습니다. 집계에서 빼 두었으니 SharePoint에서 환율을 넣어 주세요.</div></div></div>
+        ${table(['PO','고객','상태','품목','달러 금액'],
+          Q.fx_missing.map(x=>({cells:[esc(x.po),esc(x.bb),esc(x.status),x.items+'개','$'+Math.round(x.usd).toLocaleString()]})))}
       </div>`);
     }
   }
@@ -1568,9 +1635,10 @@ document.getElementById('asOf').textContent='데이터 기준 '+PAY.meta.as_of;
 document.getElementById('foot').innerHTML=`
   <div><b>보드별 축이 다릅니다</b> — 입금 현황: 입금일(품목 결제일) · 영업 현황: 발주일(PODate).
   같은 데이터라도 "언제로 계산하느냐"가 달라 금액이 다릅니다.</div>
-  <div style="margin-top:8px"><b>집계 대상</b> — 시험·재고이동 PO와 철회(Withdrawn) PO·품목은 뺍니다. 금액은 PO 합계를 품목 매출 비중으로 나눠 품목 결제일에 배분합니다.
+  <div style="margin-top:8px"><b>집계 기준</b> — 매출·매입은 <b>품목(POItem)</b> 기준입니다: 매출 = 품목 매출, 매입 = 품목별 원가(COGS 기록) + 품목 물류·부대비, 입금월 = 품목 결제일, ETD = 품목 선적일.
+  PO 기준은 PO 건수·상태 같은 PO별 통계에만 씁니다. 시험·재고이동 PO와 철회(Withdrawn) PO·품목은 뺍니다.
   진행 중 PO의 납품예정은 품목 선적 일정, 없으면 고객 요청납기입니다.</div>
-  <div style="margin-top:8px"><b>예상 매출이익</b> = 매출 × (원가 등록분의 마진율). 원가 미등록 PO를 같은 마진으로 가정한 추정치이며, 확정 이익과 원가등록율을 함께 표기합니다.</div>
+  <div style="margin-top:8px"><b>예상 매출이익</b> = 매출 × (원가 등록분의 마진율). 원가 미등록 품목을 같은 마진으로 가정한 추정치이며, 확정 이익과 원가등록율을 함께 표기합니다.</div>
   <div style="margin-top:8px"><b>평균 발주주기</b>는 고객마다 다릅니다. 최근 2년 발주 간격의 평균이며, 표본 수와 편차로 신뢰도(높음/보통/낮음)를 판정합니다.</div>
   <div style="margin-top:8px">출처: KNC 분기영업 파이프라인 + KNC WORK LOG · 데이터 품질: 입금일 이상 ${PAY.meta.quality.payment_date_invalid}건 · 미입력 ${PAY.meta.quality.payment_date_missing}건 / 전체 ${PAY.meta.quality.total_po}건 ·
   기록 통계(분기 리포트 등)는 별도 파일로 관리합니다.</div>`;
