@@ -194,10 +194,13 @@
   footer b{color:var(--secondary);}
   .hidden{display:none!important;}
   #tip{position:fixed;z-index:60;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--card);
-    font-size:12px;line-height:1.45;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.28);max-width:250px;font-variant-numeric:tabular-nums;}
+    font-size:12px;line-height:1.45;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.28);max-width:320px;font-variant-numeric:tabular-nums;}
   #tip .tt-t{font-weight:700;margin-bottom:3px;}
   #tip .tt-r{display:flex;justify-content:space-between;gap:14px;}
   #tip .tt-r .k{opacity:.75;}
+  #tip .tt-b{font-weight:650;margin:2px 0 3px;}
+  #tip .tt-p{opacity:.88;white-space:normal;}
+  #tip .tt-f{opacity:.6;font-size:11px;margin-top:4px;}
   .hoverable:hover{opacity:.84;}
   @media (prefers-reduced-motion: reduce){*{transition:none!important;}}
 </style>
@@ -705,7 +708,25 @@ const WL = {
   category: 'field_3',      // 일반관리 / Trading / WorkShop / 고객동향 / 주물관리 / 신제품 / 품질 / 사무자동화
   start: 'field_6',         // StartDate
   buyer: 'BuyerLookupId',
+  title: 'Title',           // 제목 (면담 한 줄 요지)
+  desc: 'field_1',          // Description (서식 있는 HTML)
 };
+
+/* 서식 있는 글(HTML) → 평문 */
+function plainText(v) {
+  return String(v || '').replace(/<br\s*\/?>|<\/(p|div|li)>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, c) => String.fromCharCode(+c)).replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
+}
+/* 면담 요약 = 제목 + 본문 앞부분(‘결론:’이 있으면 거기서부터) 160자 — 작성자가 쓴 글을 그대로 발췌한다 */
+function meetSummary(r) {
+  let body = plainText(r[WL.desc]);
+  const k = body.search(/결론\s*[:：]/);
+  if (k > 0) body = body.slice(k);
+  if (body.length > 160) body = body.slice(0, 160).replace(/\s+\S*$/, '') + '…';
+  return { title: String(r[WL.title] || '').trim(), text: body };
+}
 
 /* PO 하나의 납품 진행 — 품목 단위로 판정한다
    · 품목 납품일이 지났거나 품목 상태가 Delivered/Buyer Paid → 납품 끝
@@ -749,7 +770,7 @@ function buildOps(poRows, items, buyers, worklog, asof) {
   const itemsBy = groupItems(items);
 
   /* 면담(고객동향) / 전체 접촉 최근일 */
-  const meetLast = new Map(), touchLast = new Map(), meetCnt = new Map();
+  const meetLast = new Map(), touchLast = new Map(), meetCnt = new Map(), meetRec = new Map();
   const wlMeta = { total: worklog.length, linked: 0, meet_total: 0, meet_linked: 0 };
   for (const r of worklog) {
     const bb = r[WL.buyer] ? byId.get(String(r[WL.buyer])) : null;
@@ -761,7 +782,7 @@ function buildOps(poRows, items, buyers, worklog, asof) {
     if (r[WL.category] === '고객동향') {
       wlMeta.meet_linked++;
       meetCnt.set(bb, (meetCnt.get(bb) || 0) + 1);
-      if (!meetLast.has(bb) || d > meetLast.get(bb)) meetLast.set(bb, d);
+      if (!meetLast.has(bb) || d > meetLast.get(bb)) { meetLast.set(bb, d); meetRec.set(bb, r); }
     }
   }
 
@@ -841,6 +862,7 @@ function buildOps(poRows, items, buyers, worklog, asof) {
       meet_elapsed: ml ? Math.round((asof - ml) / DAY) : null,
       meet_last: ml ? ymd(ml) : null,
       meet_count: meetCnt.get(bb) || 0,
+      ...(meetRec.has(bb) ? (({ title, text }) => ({ meet_title: title, meet_text: text }))(meetSummary(meetRec.get(bb))) : {}),
       touch_elapsed: tl ? Math.round((asof - tl) / DAY) : null,
       touch_last: tl ? ymd(tl) : null,
       s2025: salesBy[asof.getUTCFullYear() - 1] || 0,
@@ -1505,11 +1527,11 @@ const meetCell=r=>r.meet_elapsed==null
 
 /* 고객별 발주경과 vs 그 고객의 평균주기 + 면담경과 */
 function opsBars(mount,{rows}){
-  const rh=30,gap=9,mT=20,mL=118,mR=104,W=680,H=mT+rows.length*(rh+gap);
+  const rh=30,gap=9,mT=20,mL=118,mR=232,W=760,H=mT+rows.length*(rh+gap);
   const max=Math.max(...rows.flatMap(r=>[r.po_elapsed,r.meet_elapsed||0,r.avg_gap||0]),1);
   const iw=W-mL-mR;
   const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
-  svg.appendChild(el('text',{x:mL,y:10,class:'glab','font-size':10},'막대=경과일 · │=그 고객의 평균 발주주기'));
+  svg.appendChild(el('text',{x:mL,y:10,class:'glab','font-size':9.5},'막대=경과일 · │=그 고객의 평균 발주주기'));
   rows.forEach((r,i)=>{
     const y=mT+i*(rh+gap);
     const late=r.overdue>0;
@@ -1521,29 +1543,33 @@ function opsBars(mount,{rows}){
       ['지연',late?r.overdue+'일':'없음'],
       ['예상 다음 발주',r.exp_next_po||'-']]));
     svg.appendChild(b1);
-    // 면담 경과
+    // 면담 경과 — 툴팁은 최근 면담 내용 요약(WORK LOG 제목 + 본문 발췌)
     if(r.meet_elapsed!=null){
       const w2=(r.meet_elapsed/max)*iw;
       const b2=el('rect',{x:mL,y:y+15,width:Math.max(w2,1),height:12,rx:3,fill:cv('--s4')});
-      bindTip(b2,tt(r.name,[['최근 면담',r.meet_last],['경과',r.meet_elapsed+'일'],['면담 기록',r.meet_count+'건']]));
+      bindTip(b2,`<div class="tt-t">${esc(shortName(r.name))} · 최근 면담 ${esc(r.meet_last)}</div>`
+        +(r.meet_title?`<div class="tt-b">${esc(r.meet_title)}</div>`:'')
+        +(r.meet_text?`<div class="tt-p">${esc(r.meet_text)}</div>`:'')
+        +`<div class="tt-f">${r.meet_elapsed}일 경과 · 면담 기록 ${r.meet_count}건 · WORK LOG 고객동향</div>`);
       svg.appendChild(b2);
     }else{
-      svg.appendChild(el('text',{x:mL+3,y:y+25,class:'glab','font-size':10,fill:cv('--muted')},'면담 기록 없음'));
+      svg.appendChild(el('text',{x:mL+3,y:y+25,class:'glab','font-size':9.5,fill:cv('--muted')},'면담 기록 없음'));
     }
     // 그 고객의 평균주기 표식
     if(r.avg_gap){const tx=mL+(r.avg_gap/max)*iw;
       svg.appendChild(el('line',{x1:tx,x2:tx,y1:y-3,y2:y+15,stroke:cv('--ink'),'stroke-width':2}));}
     svg.appendChild(el('text',{x:mL-9,y:y+16,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
-    svg.appendChild(el('text',{x:W-mR+8,y:y+11,class:'dlab',fill:late?cv('--bad-ink'):cv('--secondary')},
-      r.po_elapsed+'일'+(late?' (지연 '+r.overdue+')':'')));
-    if(r.meet_elapsed!=null)
-      svg.appendChild(el('text',{x:W-mR+8,y:y+26,class:'dlab',fill:cv('--muted'),'font-size':10},'면담 '+r.meet_elapsed+'일'));
+    // 오른쪽: 발주 경과 · 평균 주기 / 최근 면담일(경과일) — 작게
+    svg.appendChild(el('text',{x:W-mR+10,y:y+10,class:'dlab','font-size':9.5,fill:late?cv('--bad-ink'):cv('--secondary')},
+      `발주 ${r.po_elapsed}일 경과 · 평균 주기 ${r.avg_gap?r.avg_gap+'일':'표본부족'}`));
+    svg.appendChild(el('text',{x:W-mR+10,y:y+25,class:'glab','font-size':9,fill:cv('--muted')},
+      r.meet_elapsed!=null?`최근 면담 ${r.meet_last} (${r.meet_elapsed}일 경과)`:''));   // 기록 없으면 막대 자리에 이미 표시
   });
   mount.appendChild(svg);
   const lg=document.createElement('div');lg.className='legend';
   lg.innerHTML=`<span><i style="background:var(--s1)"></i>발주 경과일</span>
-    <span><i style="background:var(--critical)"></i>발주 지연(주기 초과)</span>
-    <span><i style="background:var(--s4)"></i>면담 경과일</span>
+    <span><i style="background:var(--critical)"></i>발주 지연(평균 주기 초과)</span>
+    <span><i style="background:var(--s4)"></i>면담 경과일 — 막대에 올리면 최근 면담 요약</span>
     <span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>그 고객의 평균 발주주기</span>`;
   mount.appendChild(lg);
 }
