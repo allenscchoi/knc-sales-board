@@ -405,13 +405,15 @@ function groupItems(items) {
 }
 
 /* ── 품목 금액 ──
-   매출 = POItem.Sales (원화). 달러 단가 품목인데 환율이 비어 있으면(FXRate ≤ 1) 달러 숫자가 그대로 들어가 있어
-          집계에서 빼고 '원화 환산 누락'으로 보여준다.
+   매출 = POItem.Sales (원화). 달러 품목은 고객 지급이 확정될 때 환율(FXRate)이 기록된다 — 지급 전엔 FXRate=1이라
+          달러 숫자가 그대로 있다. 이건 오류가 아니라 '환율 미확정'이므로 앱 기본환율 1,400원으로 잠정 환산한다
+          (Allen 2026-10-02, 분기 보고 fx_policy와 같은 규칙). 원화 품목도 FXRate=1이라 Currency=USD 조건이 필수.
    매입 = 품목 원가 + 품목 물류비(LogisticCost) + 품목 부대비(ExtraCost).
           품목 원가 = COGS 리스트 행 합 (Price[달러, 조정액 포함] × KRW_x002f_USD[원/달러]).
           COGS 행이 없거나 환율 빠진 행이 있으면 POItem.SumCOGS (분할 선적으로 생긴 품목은 COGS 행이 없다). */
-const fxMissing = it => it.Currency === 'USD' && N_(it.FXRate) <= 1;
-const itemSales = it => (fxMissing(it) ? 0 : N_(it.Sales));
+const FX_DEFAULT = 1400;                                            // 앱 기본환율 KRW/USD
+const fxPending = it => it.Currency === 'USD' && N_(it.FXRate) <= 1;
+const itemSales = it => (fxPending(it) ? (N_(it.SalesUSD) || N_(it.Sales)) * FX_DEFAULT : N_(it.Sales));
 
 function itemCostMap(cogsRows) {
   const m = new Map();
@@ -530,8 +532,8 @@ function buildPay(poRows, items, cogsRows, buyers, asof) {
       value: [...new Set(badPay.map(([it]) => String(it.PaymentDate).slice(0, 10)))].join(', '),
       podate: pod ? ymd(pod) : '', etd: etdTxt(badPay.map(([it]) => it)), delivery: delTxt(badPay.map(([it]) => it)) });
 
-    // 원화 환산 누락 — 달러 단가 품목인데 환율이 비어 있음
-    const fx = its.filter(fxMissing);
+    // 환율 미확정(지급 전 달러 품목) — 1,400원 잠정 환산 대상
+    const fx = its.filter(fxPending);
     if (fx.length) fxList.push({ po: pono, bb, status: st || '(미지정)', items: fx.length,
       usd: fx.reduce((a, it) => a + (N_(it.SalesUSD) || N_(it.Sales)), 0) });
 
@@ -651,7 +653,7 @@ function buildPay(poRows, items, cogsRows, buyers, asof) {
           sales: [...statusAgg.values()].filter(s => s.pre_cost).reduce((a, s) => a + s.missing_sales, 0),
         },
         gaps, gap_count: gaps.length, gap_sales: gaps.reduce((a, g) => a + g.sales, 0),
-        fx_missing: fxList, fx_count: fxList.length,
+        fx_pending: fxList, fx_count: fxList.length, fx_rate: FX_DEFAULT,
         fx_items: fxList.reduce((a, x) => a + x.items, 0), fx_usd: fxList.reduce((a, x) => a + x.usd, 0),
       },
     },
@@ -1233,6 +1235,7 @@ function renderPay(){
       <span>🔴</span><span><b>지금 돈이 어디까지 들어왔나</b> — 축: <span class="axis">입금일(품목 결제일)</span>.
       매출·매입 모두 품목 기준이라 분할·부분 선적은 품목 결제일별로 나눠 잡습니다. Power BI는 PO 합계를 PO 결제일(마지막 회차) 하나로 잡아 월별 금액이 다를 수 있습니다.
       입금일이 기준일 이후면 <b>수금 예정</b>으로 분리해 집계합니다.${xNote?` ${xNote}은 제외했습니다.`:''}
+      ${PAY.meta.quality.fx_count?` 달러 품목 중 고객 지급 전이라 환율이 정해지지 않은 ${PAY.meta.quality.fx_items}개($${Math.round(PAY.meta.quality.fx_usd).toLocaleString()})는 기본환율 ${(PAY.meta.quality.fx_rate||1400).toLocaleString()}원으로 잠정 환산했습니다.`:''}
       ${PAY.meta.item_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 품목 정보를 읽지 못해 PO 헤더 값으로 표시 중입니다.</b>':''}
       ${PAY.meta.item_basis!==false&&PAY.meta.cogs_basis===false?'<br><b style="color:var(--bad-ink)">⚠ 원가(COGS) 리스트를 읽지 못해 품목 SumCOGS로 표시 중입니다.</b>':''}</span></div>
     <div class="filters" id="payFilters"><span class="flab">필터</span></div>
@@ -1432,7 +1435,7 @@ function renderPay(){
 
   /* 데이터 점검 */
   const Q=PAY.meta.quality;
-  if(Q.anomaly_count||Q.gap_count||Q.fx_count){
+  if(Q.anomaly_count||Q.gap_count){
     const secQ=document.createElement('section');
     secQ.innerHTML=`<div class="sec-head"><span class="eyebrow">점검</span><h2>고쳐야 할 데이터</h2><span class="rule"></span>
       <span class="sub">SharePoint에서 수정 대상</span></div><div class="grid g2" id="qRow"></div>`;
@@ -1452,14 +1455,6 @@ function renderPay(){
         <div class="note">이미 <b>선적·납품된 품목</b>인데 매입 원가(COGS)가 없습니다. 금액은 그 품목들의 매출. (생산 전 단계는 정상이라 제외)</div></div></div>
         ${table(['PO','고객','상태','품목','ETD','납품','금액'],
           Q.gaps.map(g=>({cells:[esc(g.po),esc(g.bb),esc(g.status),(g.items||'-')+'개',g.etd,g.delivery,KRW(g.sales)]})))}
-      </div>`);
-    }
-    if(Q.fx_count){
-      qRow.insertAdjacentHTML('beforeend',`<div class="card">
-        <div class="card-head"><div><h3>원화 환산 누락 — PO ${Q.fx_count}건 · 품목 ${Q.fx_items}개 · $${Math.round(Q.fx_usd).toLocaleString()}</h3>
-        <div class="note">달러 단가 품목인데 환율이 비어 있어 매출 칸에 <b>달러 숫자가 그대로</b> 들어가 있습니다. 집계에서 빼 두었으니 SharePoint에서 환율을 넣어 주세요.</div></div></div>
-        ${table(['PO','고객','상태','품목','달러 금액'],
-          Q.fx_missing.map(x=>({cells:[esc(x.po),esc(x.bb),esc(x.status),x.items+'개','$'+Math.round(x.usd).toLocaleString()]})))}
       </div>`);
     }
   }
