@@ -968,18 +968,25 @@ function ticks(max,n=4){if(max<=0)return[0,1];const raw=max/n,mag=Math.pow(10,Ma
 
 /* ── chart: grouped columns ── */
 function gcols(mount,{labels,series,fmtY,fmtTip,rotate}){
+  // stack 키가 같은 series는 한 막대에 아래→위로 쌓는다. dashed=점선 테두리+옅은 채움(예정분 등)
   const W=620,H=250,mL=46,mR=10,mT=14,mB=rotate?52:36,iw=W-mL-mR,ih=H-mT-mB;
-  const max=Math.max(...series.flatMap(s=>s.values),0),tk=ticks(max),tmax=tk[tk.length-1]||1;
+  const slots=[];
+  series.forEach(s=>{const k=s.stack||s.name;let sl=slots.find(x=>x.k===k);if(!sl)slots.push(sl={k,ss:[]});sl.ss.push(s);});
+  const tot=(sl,i)=>sl.ss.reduce((a,s)=>a+Math.max(s.values[i]||0,0),0);
+  const max=Math.max(...labels.flatMap((_,i)=>slots.map(sl=>tot(sl,i))),0),tk=ticks(max),tmax=tk[tk.length-1]||1;
   const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
   tk.forEach(t=>{const y=mT+ih-(t/tmax)*ih;
     svg.appendChild(el('line',{x1:mL,x2:W-mR,y1:y,y2:y,stroke:cv('--grid'),'stroke-width':1}));
     svg.appendChild(el('text',{x:mL-7,y:y+3.5,'text-anchor':'end',class:'ax'},fmtY(t)));});
-  const n=labels.length,gw=iw/n,ns=series.length,bw=Math.max(3,Math.min(18,(gw-6)/ns));
+  const n=labels.length,gw=iw/n,ns=slots.length,bw=Math.max(3,Math.min(18,(gw-6)/ns));
   labels.forEach((lab,i)=>{const gx=mL+i*gw+gw/2;
-    series.forEach((s,j)=>{const v=s.values[i]||0,bh=(v/tmax)*ih;
-      const x=gx-(ns*bw+2*(ns-1))/2+j*(bw+2),y=mT+ih-bh;
-      const r=el('rect',{x,y,width:bw,height:Math.max(bh,.5),rx:2.5,fill:s.color});
-      bindTip(r,tt(lab,series.map(ss=>[ss.name,fmtTip(ss.values[i]||0)])));svg.appendChild(r);});
+    slots.forEach((sl,j)=>{const x=gx-(ns*bw+2*(ns-1))/2+j*(bw+2);let acc=0;
+      sl.ss.forEach((s,q)=>{const v=Math.max(s.values[i]||0,0);
+        if(!v&&q>0)return;
+        const bh=(v/tmax)*ih,y=mT+ih-acc-bh;acc+=bh;
+        const r=el('rect',{x,y,width:bw,height:Math.max(bh,.5),rx:2.5,fill:s.color,'fill-opacity':s.dashed?.28:1});
+        if(s.dashed){r.setAttribute('stroke',s.color);r.setAttribute('stroke-width',1.4);r.setAttribute('stroke-dasharray','4 2.5');}
+        bindTip(r,tt(lab,series.map(ss=>[ss.name,fmtTip(ss.values[i]||0)])));svg.appendChild(r);});});
     if(rotate) svg.appendChild(el('text',{x:gx,y:H-mB+14,class:'glab','text-anchor':'end',transform:`rotate(-45 ${gx} ${H-mB+14})`},lab));
     else svg.appendChild(el('text',{x:gx,y:H-mB+14,'text-anchor':'middle',class:'glab'},lab));});
   mount.appendChild(svg);
@@ -1302,45 +1309,50 @@ function renderPay(){
         {cells:['<b>예상 총매입</b>','<b>'+KRW(PU.total_cost)+'</b>','-','<b>'+pct(PU.total_cost/PU.sales)+'</b>','']},
         {cells:['<b>예상 매출이익</b>','<b>'+KRW(PU.profit)+'</b>','-','<b>'+pct(PU.margin)+'</b>','물류·부대비 차감 후']},
         {cells:['(참고) 원가 확정분만',KRW(PU.confirmed_profit),'-',pct(PU.confirmed_margin),'추정 제외']}])});
-
-    const byM={};
-    PAY.scheduled.forEach(x=>{(byM[x.ym]=byM[x.ym]||{ym:x.ym,sales:0,po:0});
-      byM[x.ym].sales+=x.sales;byM[x.ym].po+=x.po;});
-    const fut=Object.values(byM).sort((a,b)=>a.ym<b.ym?-1:1);
-    vizCard(rcRow,{title:'월별 수금 예정',note:'앞으로 들어올 돈 — 자금 계획용',
-      draw:m=>{if(!fut.length){m.innerHTML='<div class="note" style="padding:20px 0">예정된 수금이 없습니다.</div>';return;}
-        gcols(m,{labels:fut.map(x=>x.ym.slice(2)),
-          series:[{name:'수금 예정',color:cv('--s4'),values:fut.map(x=>x.sales)}],
-          fmtY:v=>eok(v,1),fmtTip:v=>KRW(v)});},
-      tableHTML:table(['월','예정 금액','건수'],fut.map(x=>({cells:[x.ym,KRW(x.sales),x.po+'건']})))});
+    /* 월별 수금 예정은 아래 '월별 입금' 차트에 점선으로 통합 */
   }
 
   /* 월별 추이 */
   const secM=document.createElement('section');
   secM.innerHTML='<div class="sec-head"><span class="eyebrow">추이</span><h2>월별 입금</h2><span class="rule"></span></div><div id="moRow"></div>';
   S.appendChild(secM);
+  // 기준일까지는 입금 완료(실선), 이후는 품목 결제일 기준 입금 예정(점선·다른 색) — 같은 막대에 쌓는다.
+  // 당해연도를 보고 있으면 다음 해로 넘어가는 예정분도 이어서 보여준다
+  const moCells=payCells(paySelYears,paySelCust).concat(paySelYears.size&&paySelYears.has(CUR_Y)
+    ?PAY.cells.filter(c=>c.ym.slice(0,4)>CUR_Y&&(!paySelCust.size||paySelCust.has(c.bb))):[]);
   const mMap={};
-  payCells(paySelYears,paySelCust).forEach(c=>{
-    const m=mMap[c.ym]||(mMap[c.ym]={ym:c.ym,sales:0,csales:0,cost:0,cogs:0,po:0});
-    m.sales+=c.col_sales;m.csales+=c.col_csales;m.cost+=c.col_cost;m.cogs+=c.col_cogs;m.po+=c.col_po;});
-  const mo=Object.values(mMap).filter(m=>m.po>0).sort((a,b)=>a.ym<b.ym?-1:1)
-    .map(m=>({...m,est:m.csales?m.sales*((m.csales-m.cost)/m.csales):0,
-              margin:m.csales?(m.csales-m.cost)/m.csales:null,
-              gross:m.csales?m.sales*((m.csales-m.cogs)/m.csales):0,
-              gmargin:m.csales?(m.csales-m.cogs)/m.csales:null}));
-  vizCard(document.getElementById('moRow'),{title:'월별 입금 완료 · 예상 매출이익',
-    note:'Power BI의 YearMonth 표를 그래프로 — 계절성과 이익 동행이 한눈에',
+  moCells.forEach(c=>{
+    const m=mMap[c.ym]||(mMap[c.ym]={ym:c.ym,done:0,sched:0,csales:0,cost:0,cogs:0,po:0,spo:0});
+    m.done+=c.col_sales;m.sched+=c.sales-c.col_sales;
+    m.csales+=c.csales;m.cost+=c.cost;m.cogs+=c.cogs;m.po+=c.col_po;});
+  PAY.scheduled.filter(x=>mMap[x.ym]&&(!paySelCust.size||paySelCust.has(x.bb))).forEach(x=>{mMap[x.ym].spo+=x.po;});
+  const mo=Object.values(mMap).filter(m=>Math.abs(m.done)+Math.abs(m.sched)>0).sort((a,b)=>a.ym<b.ym?-1:1)
+    .map(m=>{const all=m.done+m.sched,mg=m.csales?(m.csales-m.cost)/m.csales:null,gm=m.csales?(m.csales-m.cogs)/m.csales:null;
+      return {...m,all,margin:mg,gmargin:gm,
+        est_done:mg!=null?m.done*mg:0,est_sched:mg!=null?m.sched*mg:0,est:mg!=null?all*mg:0,
+        gross:gm!=null?all*gm:0};});
+  const hasSched=mo.some(x=>x.sched>0);
+  const futSum=mo.reduce((a,x)=>a+x.sched,0);
+  const sw=(v,d)=>d?`border:1.5px dashed var(${v});background:color-mix(in srgb,var(${v}) 28%,transparent)`:`background:var(${v})`;
+  vizCard(document.getElementById('moRow'),{title:hasSched?'월별 입금 — 완료 · 예정 · 예상 매출이익':'월별 입금 완료 · 예상 매출이익',
+    note:hasSched?`<b>실선</b> = 입금 완료(기준일 ${PAY.meta.as_of}까지) · <b>점선</b> = 입금 예정(품목 결제일 기준, 합계 ${eok(futSum,2)}) — 자금 계획용. 예상 매출이익도 완료분·예정분으로 나눔`
+                 :'Power BI의 YearMonth 표를 그래프로 — 계절성과 이익 동행이 한눈에',
     draw:m=>{if(!mo.length){m.innerHTML='<div class="note" style="padding:20px 0">데이터가 없습니다.</div>';return;}
       const lg=document.createElement('div');lg.className='legend';
-      lg.innerHTML='<span><i style="background:var(--s1)"></i>입금 완료</span><span><i style="background:var(--s2)"></i>예상 매출이익</span>';
+      lg.innerHTML=`<span><i style="${sw('--s1')}"></i>입금 완료</span>`
+        +(hasSched?`<span><i style="${sw('--s4',1)}"></i>입금 예정</span>`:'')
+        +`<span><i style="${sw('--s2')}"></i>예상 매출이익${hasSched?' (완료분)':''}</span>`
+        +(hasSched?`<span><i style="${sw('--s2',1)}"></i>예상 매출이익 (예정분)</span>`:'');
       m.appendChild(lg);
       gcols(m,{labels:mo.map(x=>x.ym.slice(2)),series:[
-        {name:'입금 완료',color:cv('--s1'),values:mo.map(x=>x.sales)},
-        {name:'예상 매출이익',color:cv('--s2'),values:mo.map(x=>x.est)}],
+        {name:'입금 완료',color:cv('--s1'),values:mo.map(x=>x.done),stack:'pay'},
+        ...(hasSched?[{name:'입금 예정',color:cv('--s4'),dashed:true,values:mo.map(x=>x.sched),stack:'pay'}]:[]),
+        {name:'예상 매출이익'+(hasSched?' (완료분)':''),color:cv('--s2'),values:mo.map(x=>x.est_done),stack:'est'},
+        ...(hasSched?[{name:'예상 매출이익 (예정분)',color:cv('--s2'),dashed:true,values:mo.map(x=>x.est_sched),stack:'est'}]:[])],
         fmtY:v=>eok(v,1),fmtTip:v=>KRW(v),rotate:mo.length>14});},
-    tableHTML:table(['월','입금 건수','매출입금액','매입송금액','매출총이익','매출이익률','영업이익','영업이익률'],
-      mo.map(x=>({cells:[x.ym,x.po+'건',KRW(x.sales),KRW(x.cogs),KRW(x.gross),pct(x.gmargin),
-        KRW(x.est),pct(x.margin)]})))});
+    tableHTML:table(['월','입금 완료','입금 예정','합계','건수(완료/예정)','매입(원가)','매출총이익','매출이익률','예상 매출이익','예상 이익률'],
+      mo.map(x=>({cells:[x.ym,KRW(x.done),x.sched?KRW(x.sched):'-',KRW(x.all),x.po+' / '+x.spo+'건',KRW(x.cogs),
+        KRW(x.gross),pct(x.gmargin),KRW(x.est),pct(x.margin)]})))});
 
   /* 연도별 (연도 필터 무시 — 추세용) */
   const secY=document.createElement('section');
