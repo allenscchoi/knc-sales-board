@@ -993,31 +993,45 @@ function gcols(mount,{labels,series,fmtY,fmtTip,rotate}){
 }
 
 /* ── chart: horizontal bullet (value vs target) ── */
-function bullets(mount,{rows,maxOverride}){
-  // 오른쪽: 달성율(굵게) + 실적 / 목표 금액(작게)
-  const rh=26,gap=7,mT=4,mL=112,mR=168,W=660,H=mT+rows.length*(rh+gap);
-  const max=maxOverride||Math.max(...rows.map(r=>Math.max(r.value,r.target||0)),1),iw=W-mL-mR;
+function bullets(mount,{rows,maxOverride,schedLabel}){
+  // 오른쪽: 달성율(굵게) + 실적(막대 색) [+ 예정] / 목표(회색). r.sched가 있으면 실적 뒤에 점선 막대로 잇는다
+  const rh=26,gap=7,mT=4,mL=112,mR=205,W=660,H=mT+rows.length*(rh+gap);
+  const max=maxOverride||Math.max(...rows.map(r=>Math.max(r.value+(r.sched||0),r.target||0)),1),iw=W-mL-mR;
   const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
+  const sl=schedLabel||'입금 예정';
   rows.forEach((r,i)=>{const y=mT+i*(rh+gap);
     svg.appendChild(el('rect',{x:mL,y:y+rh/2-5,width:iw,height:10,rx:5,fill:cv('--track')}));
     const bw=(r.value/max)*iw;
     const col=r.progress!=null&&r.progress>=0.5?cv('--s1'):(r.progress!=null&&r.progress<0.3?cv('--s2'):cv('--s1'));
+    const tip=tt(r.name,[['실적',KRW(r.value)],
+      ...(r.sched?[[sl,KRW(r.sched)],['실적+예정',KRW(r.value+r.sched)]]:[]),
+      ['목표',r.target?KRW(r.target):'-'],['달성율',pct(r.progress)],
+      ...(r.sched&&r.target?[['예상 달성율',pct((r.value+r.sched)/r.target)]]:[])]);
+    if(r.sched>0){
+      const sb=el('rect',{x:mL+Math.max(bw,1),y:y+rh/2-5,width:Math.max((r.sched/max)*iw,1),height:10,rx:5,
+        fill:col,'fill-opacity':.28,stroke:col,'stroke-width':1.3,'stroke-dasharray':'4 2.5'});
+      bindTip(sb,tip);svg.appendChild(sb);}
     const bar=el('rect',{x:mL,y:y+rh/2-5,width:Math.max(bw,1),height:10,rx:5,fill:col});
-    bindTip(bar,tt(r.name,[['실적',KRW(r.value)],['목표',r.target?KRW(r.target):'-'],['달성율',pct(r.progress)]]));
+    bindTip(bar,tip);
     svg.appendChild(bar);
     if(r.target){const tx=mL+(r.target/max)*iw;
       svg.appendChild(el('line',{x1:tx,x2:tx,y1:y+rh/2-9,y2:y+rh/2+9,stroke:cv('--ink'),'stroke-width':2}));}
     svg.appendChild(el('text',{x:mL-9,y:y+rh/2+4,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
     svg.appendChild(el('text',{x:W-mR+8,y:y+rh/2+4,class:'dlab',
       fill:r.progress>=0.5?cv('--good-ink'):cv('--secondary')},pct(r.progress,0)));
-    // 실적은 막대와 같은 색(굵게), 목표는 회색
+    // 실적은 막대와 같은 색(굵게), 예정은 같은 색 옅게(+), 목표는 회색
     const amt=el('text',{x:W-mR+50,y:y+rh/2+4,class:'glab','font-size':10});
     amt.appendChild(el('tspan',{fill:col,'font-weight':650},eok(r.value,2)));
+    if(r.sched>=5e5) amt.appendChild(el('tspan',{fill:col,'fill-opacity':.7},' +'+eok(r.sched,2)));   // 0.00억으로 보일 만큼 작으면 글자는 생략
     if(r.target) amt.appendChild(el('tspan',{fill:cv('--muted')},' / '+eok(r.target,2)));
     svg.appendChild(amt);});
   mount.appendChild(svg);
+  const hasS=rows.some(r=>r.sched>0);
   const lg=document.createElement('div');lg.className='legend';
-  lg.innerHTML=`<span><i style="background:var(--s1)"></i>실적</span><span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>연간 목표</span><span style="color:var(--muted)">우측 = 달성율 · <b style="color:var(--s1)">실적</b> / 목표 금액</span>`;
+  lg.innerHTML=`<span><i style="background:var(--s1)"></i>실적</span>`
+    +(hasS?`<span><i style="border:1.5px dashed var(--s1);background:color-mix(in srgb,var(--s1) 28%,transparent)"></i>${sl}</span>`:'')
+    +`<span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>연간 목표</span>`
+    +`<span style="color:var(--muted)">우측 = 달성율 · <b style="color:var(--s1)">실적</b>${hasS?' +예정':''} / 목표 금액</span>`;
   mount.appendChild(lg);
 }
 
@@ -1433,25 +1447,26 @@ function renderPay(){
   secC.innerHTML=`<div class="sec-head"><span class="eyebrow">고객</span><h2>고객별 목표 달성</h2><span class="rule"></span>
     <span class="sub">${esc(scope)} 입금 기준</span></div><div id="cuRow"></div>`;
   S.appendChild(secC);
-  const cMap={};
-  payCells(paySelYears,paySelCust).forEach(c=>{cMap[c.bb]=(cMap[c.bb]||0)+c.col_sales;});
+  const cMap={},sMap={};
   const showTarget=paySelYears.size===1&&paySelYears.has(CUR_Y);
+  payCells(paySelYears,paySelCust).forEach(c=>{cMap[c.bb]=(cMap[c.bb]||0)+c.col_sales;
+    if(showTarget) sMap[c.bb]=(sMap[c.bb]||0)+(c.sales-c.col_sales);});   // 당해연도 안의 입금 예정만 (다음 해 예정분 제외)
   const cs=PAY.customers.filter(c=>c.target>0&&(!paySelCust.size||paySelCust.has(c.bb)))
-    .map(c=>({...c,val:cMap[c.bb]||0}))
-    .filter(c=>c.target>=25000000||c.val>0)
+    .map(c=>({...c,val:cMap[c.bb]||0,sched:Math.max(sMap[c.bb]||0,0)}))
+    .filter(c=>c.target>=25000000||c.val>0||c.sched>0)
     .sort((a,b)=>b.target-a.target).slice(0,16);
   vizCard(document.getElementById('cuRow'),
     {title:showTarget?'고객별 입금 실적 vs 연간 목표':'고객별 입금 실적',
-     note:showTarget?'Power BI 표의 여러 열을 하나의 그래프로 — 목표 미달 고객이 즉시 보임'
+     note:showTarget?`실선 = 입금 완료 · 점선 = ${CUR_Y}년 안에 들어올 입금 예정(품목 결제일 기준, 다음 해 예정분 제외) — 목표선까지 남은 거리가 신규 수주로 채울 몫`
                     :'선택 기간의 고객별 입금액 (목표는 2026년 기준이라 표시하지 않음)',
     draw:m=>{if(!cs.length){m.innerHTML='<div class="note" style="padding:20px 0">해당 고객이 없습니다.</div>';return;}
-      bullets(m,{rows:cs.map(c=>({name:c.name,value:c.val,
+      bullets(m,{schedLabel:`${CUR_Y}년 내 입금 예정`,rows:cs.map(c=>({name:c.name,value:c.val,sched:showTarget?c.sched:0,
         target:showTarget?c.target:0,progress:showTarget&&c.target?c.val/c.target:null}))});},
-    tableHTML:table(showTarget?['고객','입금액','연간 목표','달성율','상태']:['고객','입금액','상태'],
+    tableHTML:table(showTarget?['고객','입금액',`${CUR_Y}년 내 입금 예정`,'연간 목표','달성율','예상 달성율','상태']:['고객','입금액','상태'],
       cs.map(c=>({cells:showTarget
-        ?[esc(shortName(c.name)),KRW(c.val),KRW(c.target),
+        ?[esc(shortName(c.name)),KRW(c.val),c.sched?KRW(c.sched):'-',KRW(c.target),
           `<span class="pill ${c.val/c.target>=0.5?'ok':c.val/c.target>=0.3?'warn':'bad'}">${pct(c.val/c.target,0)}</span>`,
-          esc(c.status||'-')]
+          pct((c.val+c.sched)/c.target,0),esc(c.status||'-')]
         :[esc(shortName(c.name)),KRW(c.val),esc(c.status||'-')],
         r:showTarget&&c.target?c.val/c.target:1})),
       r=>r.r<0.3)});
