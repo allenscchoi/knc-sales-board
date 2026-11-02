@@ -778,7 +778,7 @@ function buildOps(poRows, items, buyers, worklog, asof) {
     const bb = r[WL.buyer] ? byId.get(String(r[WL.buyer])) : null;
     const d = D_(r[WL.start]) || D_(r.Created);
     if (r[WL.category] === '고객동향') wlMeta.meet_total++;
-    if (!bb || !d) continue;
+    if (!bb || !d || d > asof) continue;      // 시작일이 미래인 반복 예정 업무는 면담으로 치지 않는다
     wlMeta.linked++;
     if (!touchLast.has(bb) || d > touchLast.get(bb)) touchLast.set(bb, d);
     if (r[WL.category] === '고객동향') {
@@ -816,7 +816,8 @@ function buildOps(poRows, items, buyers, worklog, asof) {
     }
 
     /* 발주 간격 — 고객마다 다르다 (최근 2년) */
-    const recent = pods.filter(d => (asof - d) / DAY <= 730);
+    // 발주일 단위로 센다 — 같은 날 낸 PO 여러 건은 한 번의 발주 (PO마다 세면 간격 0일이 섞여 주기가 짧아진다)
+    const recent = [...new Set(pods.filter(d => (asof - d) / DAY <= 730).map(d => +d))].map(t => new Date(t));
     const gaps = [];
     for (let i = 0; i + 1 < recent.length; i++) gaps.push((recent[i + 1] - recent[i]) / DAY);
     const avg = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : null;
@@ -906,7 +907,7 @@ function buildOps(poRows, items, buyers, worklog, asof) {
       axis: '발주일(PODate) 기준 · 경과일은 오늘 대비',
       as_of: ymd(asof),
       worklog: wlMeta,
-      note: '평균발주주기는 고객별로 다름. 지연 = 최종발주 후 경과일이 그 고객의 평균주기를 넘은 일수.',
+      note: '평균발주주기는 고객별로 다름(최근 2년, 같은 날 PO는 한 번의 발주). 지연 = 최종발주 후 경과일이 그 고객의 평균주기를 넘은 일수.',
     },
     facets: { deal: uniq('deal'), industry: uniq('industry') },
     summary: {
@@ -1702,7 +1703,7 @@ document.getElementById('foot').innerHTML=`
   PO 기준은 PO 건수·상태 같은 PO별 통계에만 씁니다. 시험·재고이동 PO와 철회(Withdrawn) PO·품목은 뺍니다.
   진행 중 PO의 납품예정은 품목 선적 일정, 없으면 고객 요청납기입니다.</div>
   <div style="margin-top:8px"><b>예상 매출이익</b> = 매출 × (원가 등록분의 마진율). 원가 미등록 품목을 같은 마진으로 가정한 추정치이며, 확정 이익과 원가등록율을 함께 표기합니다.</div>
-  <div style="margin-top:8px"><b>평균 발주주기</b>는 고객마다 다릅니다. 최근 2년 발주 간격의 평균이며, 표본 수와 편차로 신뢰도(높음/보통/낮음)를 판정합니다.</div>
+  <div style="margin-top:8px"><b>평균 발주주기</b>는 고객마다 다릅니다. 최근 2년 <b>발주일</b> 간격의 평균이며(같은 날 낸 PO 여러 건은 한 번의 발주로 셈), 표본 수와 편차로 신뢰도(높음/보통/낮음)를 판정합니다. 면담은 WORK LOG에서 분류가 <b>고객동향</b>이고 고객이 연결된 기록만 셉니다.</div>
   <div style="margin-top:8px">출처: KNC 분기영업 파이프라인 + KNC WORK LOG · 데이터 품질: 입금일 이상 ${PAY.meta.quality.payment_date_invalid}건 · 미입력 ${PAY.meta.quality.payment_date_missing}건 / 전체 ${PAY.meta.quality.total_po}건 ·
   기록 통계(분기 리포트 등)는 별도 파일로 관리합니다.</div>`;
 
