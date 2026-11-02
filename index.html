@@ -1010,11 +1010,14 @@ function bullets(mount,{rows,maxOverride}){
     svg.appendChild(el('text',{x:mL-9,y:y+rh/2+4,'text-anchor':'end',class:'glab',fill:cv('--ink')},shortName(r.name)));
     svg.appendChild(el('text',{x:W-mR+8,y:y+rh/2+4,class:'dlab',
       fill:r.progress>=0.5?cv('--good-ink'):cv('--secondary')},pct(r.progress,0)));
-    svg.appendChild(el('text',{x:W-mR+50,y:y+rh/2+4,class:'glab',fill:cv('--muted'),'font-size':10},
-      eok(r.value,2)+(r.target?' / '+eok(r.target,2):'')));});
+    // 실적은 막대와 같은 색(굵게), 목표는 회색
+    const amt=el('text',{x:W-mR+50,y:y+rh/2+4,class:'glab','font-size':10});
+    amt.appendChild(el('tspan',{fill:col,'font-weight':650},eok(r.value,2)));
+    if(r.target) amt.appendChild(el('tspan',{fill:cv('--muted')},' / '+eok(r.target,2)));
+    svg.appendChild(amt);});
   mount.appendChild(svg);
   const lg=document.createElement('div');lg.className='legend';
-  lg.innerHTML=`<span><i style="background:var(--s1)"></i>실적</span><span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>연간 목표</span><span style="color:var(--muted)">우측 = 달성율 · 실적 / 목표 금액</span>`;
+  lg.innerHTML=`<span><i style="background:var(--s1)"></i>실적</span><span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>연간 목표</span><span style="color:var(--muted)">우측 = 달성율 · <b style="color:var(--s1)">실적</b> / 목표 금액</span>`;
   mount.appendChild(lg);
 }
 
