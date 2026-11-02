@@ -1521,13 +1521,16 @@ const meetCell=r=>r.meet_elapsed==null
   ?'<span class="pill mut">기록없음</span>'
   :`${r.meet_elapsed}일<span class="mutx"> · ${r.meet_last}</span>`;
 
-/* 고객별 발주경과 vs 그 고객의 평균주기 + 면담경과 */
+/* 고객별 발주경과 vs 그 고객의 평균주기 + 면담경과 · 맨 오른쪽 칸은 당해 발주 달성율 */
 function opsBars(mount,{rows}){
-  const rh=30,gap=9,mT=20,mL=118,mR=232,W=760,H=mT+rows.length*(rh+gap);
+  const rh=30,gap=9,mT=20,mL=118,cA=176,mR=232+cA,W=920,H=mT+rows.length*(rh+gap);
+  const xa=W-cA+6,mw=112;   // 달성 칸 시작점 · 미터 폭
   const max=Math.max(...rows.flatMap(r=>[r.po_elapsed,r.meet_elapsed||0,r.avg_gap||0]),1);
   const iw=W-mL-mR;
   const svg=el('svg',{class:'cs',viewBox:`0 0 ${W} ${H}`,role:'img'});
   svg.appendChild(el('text',{x:mL,y:10,class:'glab','font-size':9.5},'막대=경과일 · │=그 고객의 평균 발주주기'));
+  svg.appendChild(el('text',{x:xa,y:10,class:'glab','font-size':9.5},`${CUR_Y} 발주 달성 (연간 목표 대비)`));
+  svg.appendChild(el('line',{x1:xa-10,x2:xa-10,y1:mT-4,y2:H-gap+2,stroke:cv('--grid'),'stroke-width':1}));
   rows.forEach((r,i)=>{
     const y=mT+i*(rh+gap);
     const late=r.overdue>0;
@@ -1560,13 +1563,34 @@ function opsBars(mount,{rows}){
       `발주 ${r.po_elapsed}일 경과 · 평균 주기 ${r.avg_gap?r.avg_gap+'일':'표본부족'}`));
     svg.appendChild(el('text',{x:W-mR+10,y:y+25,class:'glab','font-size':9,fill:cv('--muted')},
       r.meet_elapsed!=null?`최근 면담 ${r.meet_last} (${r.meet_elapsed}일 경과)`:''));   // 기록 없으면 막대 자리에 이미 표시
+    // 달성 칸: 미터 + 달성율 / 발주액(막대 색) / 목표(회색) · 건수. 입금 기준 달성율은 툴팁에
+    const pg=r.progress,col=pg!=null&&pg<0.3?cv('--s2'):cv('--s1');
+    const hit=el('rect',{x:xa-6,y:y-2,width:cA,height:rh+2,fill:'transparent'});
+    bindTip(hit,tt(r.name,[[`${CUR_Y} 발주 (발주일 기준)`,KRW(r.s2026)],['발주 건수',r.po_count_2026+'건'],
+      ['연간 목표',r.target?KRW(r.target):'-'],['발주 기준 달성율',pct(pg)],
+      ['입금 기준 달성율',r.target?pct(r.paid/r.target)+' · '+eok(r.paid,2):'-'],
+      [`${CUR_Y-1} 발주 (연간)`,KRW(r.s2025)]]));
+    if(r.target){
+      svg.appendChild(el('rect',{x:xa,y:y+3,width:mw,height:8,rx:4,fill:cv('--track')}));
+      svg.appendChild(el('rect',{x:xa,y:y+3,width:Math.max(Math.min(pg,1)*mw,1),height:8,rx:4,fill:col}));
+      svg.appendChild(el('text',{x:xa+mw+7,y:y+11,class:'dlab','font-size':10,
+        fill:pg>=0.5?cv('--good-ink'):cv('--secondary')},pct(pg,0)));
+    }else{
+      svg.appendChild(el('text',{x:xa,y:y+11,class:'glab','font-size':9,fill:cv('--muted')},'목표 없음'));
+    }
+    const amt=el('text',{x:xa,y:y+25,class:'glab','font-size':9});
+    amt.appendChild(el('tspan',{fill:col,'font-weight':650},eok(r.s2026,2)));
+    amt.appendChild(el('tspan',{fill:cv('--muted')},(r.target?' / '+eok(r.target,2):'')+` · ${r.po_count_2026}건`));
+    svg.appendChild(amt);
+    svg.appendChild(hit);
   });
   mount.appendChild(svg);
   const lg=document.createElement('div');lg.className='legend';
   lg.innerHTML=`<span><i style="background:var(--s1)"></i>발주 경과일</span>
     <span><i style="background:var(--critical)"></i>발주 지연(평균 주기 초과)</span>
     <span><i style="background:var(--s4)"></i>면담 경과일 — 막대에 올리면 최근 면담 요약</span>
-    <span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>그 고객의 평균 발주주기</span>`;
+    <span><i style="width:2px;height:13px;border-radius:1px;background:var(--ink)"></i>그 고객의 평균 발주주기</span>
+    <span><i style="background:var(--s2)"></i>발주 달성 30% 미만</span>`;
   mount.appendChild(lg);
 }
 
@@ -1620,14 +1644,20 @@ function drawOps(){
   const rows=opsRows();
   const main=document.getElementById('opsMain');main.innerHTML='';
   // 거래중인 고객 전체를 2026 매출 큰 순으로 (필터에서 거래상태를 직접 고르면 그 선택을 따름)
+  // 입금 기준 실적(당해 입금 완료) — 달성 칸 툴팁에서 발주 기준과 나란히 보여준다
+  const paidBy={};
+  PAY.cells.forEach(c=>{if(c.ym.slice(0,4)===String(CUR_Y))paidBy[c.bb]=(paidBy[c.bb]||0)+c.col_sales;});
   const pr=(opsDeal.size?rows:rows.filter(c=>c.deal==='거래중인고객'))
-    .slice().sort((a,b)=>b.s2026-a.s2026);
+    .map(c=>({...c,paid:paidBy[c.bb]||0})).sort((a,b)=>b.s2026-a.s2026);
+  const achPill=c=>c.target?`<span class="pill ${c.progress>=0.5?'ok':c.progress>=0.3?'warn':'bad'}">${pct(c.progress,0)}</span>`:'<span class="pill mut">목표 없음</span>';
   vizCard(main,{title:'발주 경과 · 면담 경과 — 고객별 자기 주기 기준',
-    note:`검은 세로선이 그 고객의 평균 발주주기입니다. 막대가 선을 넘으면 평소보다 늦은 것 · 매출 많은 순 ${pr.length}개사`,
+    note:`검은 세로선이 그 고객의 평균 발주주기입니다. 막대가 선을 넘으면 평소보다 늦은 것 · 매출 많은 순 ${pr.length}개사`
+      +` · 오른쪽 칸은 <b>${CUR_Y}년 발주액(발주일 기준) ÷ 연간 목표</b> — 입금 기준 달성율은 그 칸에 올리면 함께 보입니다`,
     draw:m=>{if(!pr.length){m.innerHTML='<div class="note" style="padding:20px 0">해당 고객이 없습니다.</div>';return;}
       opsBars(m,{rows:pr});},
-    tableHTML:table(['고객','2026 실적','최종 발주','발주경과','평균주기(신뢰도)','지연','면담경과'],
-      pr.map(c=>({cells:[esc(shortName(c.name)),eok(c.s2026,2),c.last_po,c.po_elapsed+'일',gapCell(c),
+    tableHTML:table(['고객',`${CUR_Y} 발주`,'건수','연간 목표','발주 달성율','최종 발주','발주경과','평균주기(신뢰도)','지연','면담경과'],
+      pr.map(c=>({cells:[esc(shortName(c.name)),eok(c.s2026,2),c.po_count_2026+'건',c.target?eok(c.target,2):'-',achPill(c),
+        c.last_po,c.po_elapsed+'일',gapCell(c),
         c.overdue?`<span class="pill bad">${c.overdue}일</span>`:'<span class="pill mut">-</span>',
         meetCell(c)],overdue:c.overdue})),
       r=>r.overdue>0)});
